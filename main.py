@@ -561,6 +561,7 @@ from age_badge import draw_quality_age_badge, draw_quality_corner_bookmark, draw
 from landscape import build_landscape
 from awards import _dominant_cluster, _is_skin_tone, dominant_frost_rgb
 from awards import FETCH_FAILED, _RateLimited, draw_award_badge, draw_award_sash, parse_mdblist_awards
+from awards import LABEL_FONT_FILES
 from festivals import match_festival_keyword
 from i18n import load_languages, translate_genre, translate_sash
 from cache import (
@@ -992,6 +993,10 @@ class RequestConfig:
     # 10 and shown to one decimal (87 → "8.7", 100 → "10.0").  Default keeps
     # the legacy 0-100 integer form.
     score_out_of_10: bool = False
+    # Clean mode (mode 2) genre/rating separator. "none" (default) keeps the
+    # legacy single space ("Adventure ★ 7.3"); "dot" inserts " · " so the two
+    # fields read distinctly ("Adventure · ★ 7.3").
+    numeric_score_separator: str = "none"
     accent_bar_y_offset:           float = field(default_factory=lambda: _cfg.ACCENT_BAR_MODE_FONT_Y_OFFSET)
     numeric_score_y_offset:        float = field(default_factory=lambda: _cfg.NUMERIC_SCORE_MODE_FONT_Y_OFFSET)
     score_glow_threshold:          int   = field(default_factory=lambda: _cfg.SCORE_GLOW_THRESHOLD)
@@ -1154,19 +1159,50 @@ class RequestConfig:
     notch_vignette_color: bool = False
     # Reference colour mode: match the frosted tint to the poster's true colour
     # (bolder, un-pastel) instead of the saturation-scaled frosted tint. Global.
-    frost_reference:         bool  = False
+    # False   → "Pastel": saturation-scaled frosted tint, always light, dark text.
+    # True    → "Reference": true poster hue/saturation lifted to a bright value,
+    #           still always light, dark text.
+    # "match" → "Auto": the frosted tint keeps the poster colour's own lightness
+    #           (can land genuinely dark on dark art), and the label ink follows —
+    #           light text on a dark panel, dark text on a light one. This is
+    #           what previously only happened automatically when a tinted
+    #           vignette confidently matched; exposing it directly lets the bar
+    #           and sash go dark-on-dark without needing the vignette involved.
+    frost_reference:         "bool | str" = False
     sash_length_ratio: float = 1.15  # diagonal sash length as fraction of poster width
     sash_height_ratio: float = 0.12  # diagonal sash height (thickness) as fraction of poster width
     wait_for_quality: bool = False  # block response until quality is fetched (for poster-warm workflows)
     greyscale_no_quality: bool = False  # greyscale art when no quality found (needs wait_for_quality)
     rating_text_color: tuple[int, int, int] | None = None
     sash_text_color:   tuple[int, int, int] | None = None
+    # Label font shared by the diagonal sash, the notch badge and the frosted
+    # rating bar. One of: inter (default/legacy) | bebas | oswald | playfair |
+    # notoserif | ubuntu. "bebas" is the closest bundled match to the tall,
+    # condensed, all-caps look BetterPosters' own sash ribbons use.
+    label_font: str = "inter"
 
 
 def _parse_bool(val: str | None, default: bool) -> bool:
     if val is None:
         return default
     return val.strip().lower() not in ("0", "false", "no")
+
+
+def _parse_frost_mode(val: str | None, default: "bool | str") -> "bool | str":
+    """Tri-state parse for frost_reference: false/true keep their old meaning
+    ("pastel" / "reference"); "match" (or "auto") is the new true-lightness,
+    auto-contrast mode. Anything unrecognised falls back to *default* rather
+    than raising, since this runs per request."""
+    if val is None:
+        return default
+    v = val.strip().lower()
+    if v in ("match", "auto"):
+        return "match"
+    if v in ("0", "false", "no", "pastel", "sample"):
+        return False
+    if v in ("1", "true", "yes", "reference"):
+        return True
+    return default
 
 
 def _parse_hex_color(val: str | None) -> tuple[int, int, int] | None:
@@ -1321,6 +1357,7 @@ def build_request_config(params: dict) -> RequestConfig:
     cfg.release_status_cinema_only = _b("release_status_cinema_only", cfg.release_status_cinema_only)
     cfg.muted                   = _b("muted",                  cfg.muted)
     cfg.score_out_of_10         = _b("score_out_of_10",        cfg.score_out_of_10)
+    cfg.numeric_score_separator = params.get("numeric_score_separator", cfg.numeric_score_separator) or cfg.numeric_score_separator
     cfg.textless                = _b("textless",               cfg.textless)
     # top_gradient accepts off / low / medium / high.  Legacy boolean values
     # (true / false) from pre-v1.0.4 URLs map to high / off respectively so
@@ -1461,7 +1498,7 @@ def build_request_config(params: dict) -> RequestConfig:
     cfg.bar_font_size_ratio     = _f("bar_font_size_ratio",     cfg.bar_font_size_ratio,     0.15, 0.70)
     cfg.bar_frost_opacity       = _f("bar_frost_opacity",       cfg.bar_frost_opacity,       0.0,  1.0)
     cfg.bar_frost_saturation    = _f("bar_frost_saturation",    cfg.bar_frost_saturation,    0.0,  2.0)
-    cfg.frost_reference         = _b("frost_reference",         cfg.frost_reference)
+    cfg.frost_reference         = _parse_frost_mode(params.get("frost_reference"), cfg.frost_reference)
     cfg.bar_bottom_inset        = _f("bar_bottom_inset",        cfg.bar_bottom_inset,        0.0,  0.10)
     _bst = (params.get("bar_style") or "").strip().lower()
     if _bst in ("frosted", "pure_black", "silver", "gold", "rating_black", "rating_frosted"):
@@ -1533,6 +1570,8 @@ def build_request_config(params: dict) -> RequestConfig:
     cfg.sash_priority        = _parse_sash_priority(params.get("sash_priority"))
     cfg.rating_text_color    = _parse_hex_color(params.get("rating_text_color"))
     cfg.sash_text_color      = _parse_hex_color(params.get("sash_text_color"))
+    _label_font_in           = (params.get("label_font") or cfg.label_font).strip().lower()
+    cfg.label_font           = _label_font_in if _label_font_in in LABEL_FONT_FILES else cfg.label_font
 
     return cfg
 
@@ -3136,7 +3175,12 @@ def build_poster(
                 _score_text = "10" if score >= 100 else f"{score / 10:.1f}"
             else:
                 _score_text = str(score)
-            label = f"{genre_label} ★ {_score_text}" if genre_label else f"★ {_score_text}"
+            # Separator between the genre and the star rating. Off by default
+            # (kept identical to legacy renders / saved URLs); "dot" inserts a
+            # " · " so a genre + rating pairing reads as two fields rather than
+            # running together — e.g. "Adventure · ★ 7.3".
+            _numeric_sep = " · " if cfg.numeric_score_separator == "dot" else " "
+            label = f"{genre_label}{_numeric_sep}★ {_score_text}" if genre_label else f"★ {_score_text}"
             rating_cy = height * cfg.numeric_score_y_offset
 
             try:
@@ -3361,6 +3405,7 @@ def build_poster(
                 ) if cfg.bar_style in ("rating_black", "rating_frosted") else None,
                 tint_rgb         = _frost_tint,
                 text_color       = cfg.rating_text_color,
+                font_name        = cfg.label_font,
             )
 
     # --- Discovery sash / badge ---
@@ -3381,7 +3426,8 @@ def build_poster(
                                      frost_reference=_frost_ref,
                                      tint_rgb=_frost_tint,
                                      star=_is_star,
-                                     text_color=cfg.sash_text_color)
+                                     text_color=cfg.sash_text_color,
+                                     font_name=cfg.label_font)
         else:  # "sash" — diagonal
             _poster_color = _frost_tint if cfg.sash_poster_color else None
             image = draw_award_sash(image, _label_tr, sash_type=sash_type, muted=cfg.muted,
@@ -3391,7 +3437,8 @@ def build_poster(
                                     frost_saturation=_frost_sat,
                                     frost_reference=_frost_ref,
                                     star=_is_star,
-                                    text_color=cfg.sash_text_color)
+                                    text_color=cfg.sash_text_color,
+                                    font_name=cfg.label_font)
 
     return image
 

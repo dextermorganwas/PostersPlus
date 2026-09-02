@@ -29,6 +29,69 @@ class _FetchFailed:
 FETCH_FAILED = _FetchFailed()
 
 
+# ---------------------------------------------------------------------------
+# Sash / badge label fonts
+# ---------------------------------------------------------------------------
+# Selectable font for the diagonal award sash and the notch badge label text.
+# "inter" (default) is the original hardcoded font — every existing saved
+# render/URL is unaffected. The others are bundled under fonts/ already (they
+# back the genre-aware fallback-title feature) so no new asset is needed.
+# "bebas" is the closest bundled match to the tall, condensed, all-caps look
+# BetterPosters' own sash ribbons use.
+LABEL_FONT_FILES: dict[str, str] = {
+    "inter":    "Inter-Bold.ttf",
+    "bebas":    "BebasNeue-Bold.ttf",
+    "oswald":   "Oswald-Bold.ttf",
+    "playfair": "PlayfairDisplay-Bold.ttf",
+    "notoserif": "NotoSerif-Bold.ttf",
+    "ubuntu":   "Ubuntu-Bold.ttf",
+}
+
+
+def _label_font_path(font_name: str | None) -> str:
+    fname = LABEL_FONT_FILES.get((font_name or "inter").strip().lower(), LABEL_FONT_FILES["inter"])
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", fname)
+
+
+# None of the bundled display faces below carry a ★ glyph (checked against
+# their cmaps) — PIL silently falls back to the font's .notdef box, which
+# reads as a broken tofu square wherever a rating star is drawn. Inter does
+# have the glyph, so _draw_label_text substitutes it in per-character rather
+# than refusing the font choice outright.
+_LABEL_FONT_MISSING_GLYPHS: dict[str, frozenset] = {
+    "bebas":     frozenset("★"),
+    "oswald":    frozenset("★"),
+    "playfair":  frozenset("★"),
+    "notoserif": frozenset("★"),
+    "ubuntu":    frozenset("★"),
+}
+
+
+def _draw_label_text(draw: "ImageDraw.ImageDraw", xy: tuple[float, float], text: str,
+                      font, font_name: str, fill, size: int) -> None:
+    """draw.text(), except any character *font_name* is known not to carry a
+    glyph for (currently just ★) is substituted with Inter at the same size.
+    Falls back to a single draw() call whenever nothing needs substituting —
+    which is every call for Inter itself, and most calls for the others."""
+    missing = _LABEL_FONT_MISSING_GLYPHS.get(font_name)
+    if not missing or not any(ch in missing for ch in text):
+        draw.text(xy, text, font=font, fill=fill)
+        return
+    fallback = ImageFont.truetype(_label_font_path("inter"), size)
+    x, y = xy
+    segment, seg_font = "", (fallback if text[0] in missing else font)
+    for ch in text:
+        ch_font = fallback if ch in missing else font
+        if ch_font is seg_font:
+            segment += ch
+        else:
+            draw.text((x, y), segment, font=seg_font, fill=fill)
+            x += draw.textlength(segment, font=seg_font)
+            seg_font, segment = ch_font, ch
+    if segment:
+        draw.text((x, y), segment, font=seg_font, fill=fill)
+
+
 class _RateLimited:
     """
     Returned when a fetch was rejected with HTTP 429.
@@ -1470,6 +1533,7 @@ def draw_award_badge(
     tint_rgb: tuple[float, float, float] | None = None,  # whole-poster colour (from un-graded art)
     star: bool | None = None,         # override ★ decision (resolved on canonical label)
     text_color: tuple[int, int, int] | None = None,  # override default white text
+    font_name: str = "inter",         # see LABEL_FONT_FILES
 ) -> Image.Image:
     """
     Centred notch badge that emerges from the top edge of the poster.
@@ -1536,10 +1600,9 @@ def draw_award_badge(
     base_h = int(height * 0.075 * size_ratio_h)
 
     # ── Font: fixed size so every label renders at the same scale ────────────
-    _fonts_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
     font_size_ss = int(base_h * font_size_ratio) * SS
     try:
-        font = ImageFont.truetype(os.path.join(_fonts_dir, "Inter-Bold.ttf"), font_size_ss)
+        font = ImageFont.truetype(_label_font_path(font_name), font_size_ss)
     except IOError:
         font = ImageFont.load_default()
 
@@ -1646,7 +1709,7 @@ def draw_award_badge(
         tx, ty = _text_center(td, label, font, bw / 2, text_cy_ss)
         # (text_color is deliberately not consulted here: this style has always
         # ignored it, and honouring it now would restyle existing posters.)
-        td.text((tx, ty), label, font=font, fill=(*_frost_ink(fr_r, fr_g, fr_b), 245))
+        _draw_label_text(td, (tx, ty), label, font, font_name, (*_frost_ink(fr_r, fr_g, fr_b), 245), font_size_ss)
         badge_ss = Image.alpha_composite(badge_ss, txt_layer)
 
         badge_final = badge_ss.resize((badge_w, badge_h), Image.Resampling.LANCZOS)
@@ -1669,7 +1732,7 @@ def draw_award_badge(
         td = ImageDraw.Draw(txt_layer)
         tx, ty = _text_center(td, label, font, bw / 2, text_cy_ss)
         _txt_rgb_black = text_color if text_color is not None else (210, 210, 218)
-        td.text((tx, ty), label, font=font, fill=(*_txt_rgb_black, 245))
+        _draw_label_text(td, (tx, ty), label, font, font_name, (*_txt_rgb_black, 245), font_size_ss)
         badge_ss = Image.alpha_composite(badge_ss, txt_layer)
         badge_final = badge_ss.resize((badge_w, badge_h), Image.Resampling.LANCZOS)
         result = image.copy()
@@ -1784,8 +1847,8 @@ def draw_award_badge(
     td = ImageDraw.Draw(txt_layer)
     tx, ty = _text_center(td, label, font, bw // 2, text_cy_ss)
     _txt_rgb = text_color if text_color is not None else (255, 255, 255)
-    td.text((tx + SS, ty + SS), label, font=font, fill=(0, 0, 0, 160))
-    td.text((tx, ty),           label, font=font, fill=(*_txt_rgb, 235))
+    _draw_label_text(td, (tx + SS, ty + SS), label, font, font_name, (0, 0, 0, 160), font_size_ss)
+    _draw_label_text(td, (tx, ty),           label, font, font_name, (*_txt_rgb, 235), font_size_ss)
     badge = Image.alpha_composite(badge, txt_layer)
 
     # ── Downscale → composite ────────────────────────────────────────────────
@@ -1890,6 +1953,7 @@ def draw_award_sash(
     frost_reference: bool = False,
     star: bool = False,
     text_color: tuple[int, int, int] | None = None,
+    font_name: str = "inter",
 ) -> Image.Image:
     if star:
         label = f"★  {label}"
@@ -1958,7 +2022,7 @@ def draw_award_sash(
 
     font: Any
     try:
-        font = ImageFont.truetype(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Inter-Bold.ttf"), font_size)
+        font = ImageFont.truetype(_label_font_path(font_name), font_size)
     except IOError:
         font = ImageFont.load_default()
 
@@ -1970,8 +2034,8 @@ def draw_award_sash(
 
     _txt_rgb = text_color if text_color is not None else (225, 225, 225)
     tx, ty = _text_center(td, label, font, band_cx, band_cy)
-    td.text((tx + 2 * SS, ty + 2 * SS), label, font=font, fill=(0, 0, 0, 180))
-    td.text((tx, ty),                   label, font=font, fill=(*_txt_rgb, 225))
+    _draw_label_text(td, (tx + 2 * SS, ty + 2 * SS), label, font, font_name, (0, 0, 0, 180), font_size)
+    _draw_label_text(td, (tx, ty),                   label, font, font_name, (*_txt_rgb, 225), font_size)
 
     sash = Image.alpha_composite(sash, text_layer)
 

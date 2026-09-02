@@ -2695,11 +2695,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                   </div>
                 </div>
                 <div class="toggle-row" id="bar-reference-row">
-                  <span class="toggle-label" data-tip="Match the poster's true colour instead of the saturation tint.">Reference Colour</span>
-                  <label class="toggle-switch">
-                    <input type="checkbox" id="tog-bar-frost-reference" onchange="onFrostReferenceChange(this)">
-                    <div class="toggle-track"><div class="toggle-thumb"></div></div>
-                  </label>
+                  <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the bar can go genuinely dark on dark art, and the text automatically flips light/dark to match, the way BetterPosters' sashes do.">Colour Mode</span>
+                  <select class="segmented-source" id="cfg-bar-frost-reference" onchange="onFrostReferenceChange(this)">
+                    <option value="pastel" selected>Pastel</option>
+                    <option value="reference">Reference</option>
+                    <option value="match">Auto</option>
+                  </select>
+                  <div class="segmented" data-for="cfg-bar-frost-reference"></div>
                 </div>
                 <div class="field" id="bar-saturation-field">
                   <label class="field-label">Colour Saturation</label>
@@ -2759,6 +2761,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                 <span class="toggle-label">Display score out of 10</span>
                 <label class="toggle-switch">
                   <input type="checkbox" id="tog-score-out-of-10" onchange="build(); queuePreviewReload()">
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                </label>
+              </div>
+              <div class="toggle-row score10-row" id="numeric-dot-separator-row" style="display:none;">
+                <span class="toggle-label" data-tip="Inserts a middle-dot between the genre and the star rating, e.g. &quot;Adventure &middot; &#9733; 7.3&quot; instead of &quot;Adventure &#9733; 7.3&quot;.">Dot separator</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="tog-numeric-dot-separator" onchange="build(); queuePreviewReload()">
                   <div class="toggle-track"><div class="toggle-thumb"></div></div>
                 </label>
               </div>
@@ -2902,6 +2911,17 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                   <div class="toggle-track"><div class="toggle-thumb"></div></div>
                 </label>
               </div>
+              <div class="field">
+                <label class="field-label" data-tip="Font used by the diagonal sash, the notch badge and the frosted rating bar's label text — one setting, shared everywhere. Bebas Neue is the closest bundled match to BetterPosters' tall condensed sash lettering.">Label Font</label>
+                <select id="cfg-label-font" onchange="build(); queuePreviewReload()">
+                  <option value="inter" selected>Inter (default)</option>
+                  <option value="bebas">Bebas Neue</option>
+                  <option value="oswald">Oswald</option>
+                  <option value="playfair">Playfair Display</option>
+                  <option value="notoserif">Noto Serif</option>
+                  <option value="ubuntu">Ubuntu</option>
+                </select>
+              </div>
               <div class="toggle-row" id="sash-muted-row">
                 <span class="toggle-label" data-tip="Reduce sash opacity slightly.">Muted Sashes</span>
                 <label class="toggle-switch">
@@ -2926,11 +2946,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                 </label>
               </div>
               <div class="toggle-row" id="sash-reference-row" style="display:none;">
-                <span class="toggle-label" data-tip="Match the poster's true colour instead of the saturation tint. Frosted notch only.">Reference Colour</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="tog-sash-frost-reference" onchange="onFrostReferenceChange(this)">
-                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
-                </label>
+                <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the notch can go genuinely dark on dark art, and the text automatically flips light/dark to match. Frosted notch only.">Colour Mode</span>
+                <select class="segmented-source" id="cfg-sash-frost-reference" onchange="onFrostReferenceChange(this)">
+                  <option value="pastel" selected>Pastel</option>
+                  <option value="reference">Reference</option>
+                  <option value="match">Auto</option>
+                </select>
+                <div class="segmented" data-for="cfg-sash-frost-reference"></div>
               </div>
             </div>
 
@@ -4667,8 +4689,8 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
 
   // ── Rating / Genre Label ───────────────────────────────────────────────────
   params.set('rating_display_mode', ratingMode);
-  // Global frosted colour mode (bar, notch and sash share it).
-  if (c('tog-bar-frost-reference')) params.set('frost_reference', 'true');
+  // Global frosted colour mode (bar, notch and sash share it): pastel | reference | match.
+  params.set('frost_reference', vEl('cfg-bar-frost-reference') || 'pastel');
   if (ratingMode !== 0) {
     // Colour palette: exposed for the modes whose pip/score colour visibly uses it
     if (ratingMode === 1 || ratingMode === 3) {
@@ -4690,6 +4712,7 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
       params.set('numeric_score_font_size_ratio', n('cfg-font-mode2').toFixed(3));
       params.set('numeric_score_y_offset',        n('cfg-y-mode2').toFixed(2));
       params.set('score_out_of_10',               c('tog-score-out-of-10') ? 'true' : 'false');
+      params.set('numeric_score_separator',        c('tog-numeric-dot-separator') ? 'dot' : 'none');
     } else if (ratingMode === 3) {
       params.set('minimalist_append_mode',          ni('cfg-min-append'));
       params.set('minimalist_mode_font_size_ratio', n('cfg-font-mode3').toFixed(3));
@@ -4778,6 +4801,9 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
   params.set('cinema_greyscale', c('tog-cinema-greyscale') ? 'true' : 'false');
   params.set('cinema_greyscale_skip_if_available', c('tog-cinema-greyscale-skip') ? 'true' : 'false');
   params.set('release_status_cinema_only', c('tog-release-cinema-only') ? 'true' : 'false');
+  // Shared by the sash, notch badge and frosted rating bar alike, so it's sent
+  // regardless of whether the sash itself is shown.
+  params.set('label_font', vEl('cfg-label-font') || 'inter');
 
   if (showSash) {
     if (c('tog-sash-winner-star')) params.set('sash_winner_star', 'true');
@@ -5192,7 +5218,7 @@ function updateBadgeStyleFields() {
   // used to be safe because the reference toggle sat inside #sash-badge-offsets
   // and was hidden with it; it now lives in the Behaviour group, which stays.
   const isFrosted = vEl('cfg-sash-mode') === 'notch' && vEl('cfg-sash-badge-style') === 'frosted';
-  const ref = c('tog-sash-frost-reference');
+  const ref = vEl('cfg-sash-frost-reference') !== 'pastel';
   document.getElementById('sash-badge-opacity-field').style.display = isFrosted ? '' : 'none';
   document.getElementById('sash-reference-row').style.display = isFrosted ? '' : 'none';
   document.getElementById('sash-vignette-color-row').style.display = isFrosted ? '' : 'none';
@@ -5202,16 +5228,17 @@ function updateBadgeStyleFields() {
   _updateBarRatingRows();
 }
 
-// Reference Colour is one global setting shown in whichever panel owns the
-// saturation control (Rating, or Sash for a frosted notch). Keep both toggles in
-// sync and refresh which saturation slider is visible.
-// Reference Colour and Match Tinted Vignette both decide how the frosted tint
-// is built, and matching already implies reference behaviour — so they are one
-// choice, not two, and turning either on releases the other.
+// Colour Mode (Pastel / Reference / Auto) is one global setting shown in
+// whichever panel owns the saturation control (Rating, or Sash for a frosted
+// notch). Keep both selects in sync and refresh which saturation slider is
+// visible. Colour Mode and Match Tinted Vignette both decide how the frosted
+// tint is built, and matching already implies Auto behaviour — so they are one
+// choice, not two, and turning Match Tinted Vignette on resets Colour Mode
+// back to Pastel everywhere else.
 function onNotchVignetteColorChange(el) {
   if (el.checked) {
-    _setEl('tog-sash-frost-reference', false);
-    _setEl('tog-bar-frost-reference', false);
+    _setEl('cfg-sash-frost-reference', 'pastel');
+    _setEl('cfg-bar-frost-reference', 'pastel');
     updateBadgeStyleFields();
   }
   build();
@@ -5219,10 +5246,10 @@ function onNotchVignetteColorChange(el) {
 }
 
 function onFrostReferenceChange(el) {
-  if (el.checked) _setEl('tog-notch-vignette-color', false);
-  const on = el.checked;
-  _setEl('tog-bar-frost-reference',  on ? 'true' : 'false');
-  _setEl('tog-sash-frost-reference', on ? 'true' : 'false');
+  const val = el.value;
+  if (val !== 'pastel') _setEl('tog-notch-vignette-color', false);
+  _setEl('cfg-bar-frost-reference',  val);
+  _setEl('cfg-sash-frost-reference', val);
   updateBadgeStyleFields();
   build();
   queuePreviewReload();
@@ -5257,7 +5284,7 @@ function _updateBarRatingRows() {
   // so they live in the Sash panel then and hide here. Otherwise they live in
   // Rating. The saturation slider also hides when Reference Colour is on.
   const frostedNotch = vEl('cfg-sash-mode') === 'notch' && vEl('cfg-sash-badge-style') === 'frosted';
-  const ref = c('tog-bar-frost-reference');
+  const ref = vEl('cfg-bar-frost-reference') !== 'pastel';
   document.getElementById('bar-reference-row').style.display = frostedNotch ? 'none' : '';
   document.getElementById('bar-saturation-field').style.display = (frostedNotch || ref) ? 'none' : '';
 }
@@ -5516,6 +5543,7 @@ function updateRatingFields() {
   document.getElementById('rating-glow-fields').style.display       = mode === 1 ? '' : 'none';
   document.getElementById('rating-alt-colors-toggle').style.display = (mode === 1 || mode === 3) ? '' : 'none';
   document.getElementById('numeric-score10-row').style.display      = mode === 2 ? '' : 'none';
+  document.getElementById('numeric-dot-separator-row').style.display = mode === 2 ? '' : 'none';
   document.getElementById('minimalist-score10-row').style.display   = mode === 3 ? '' : 'none';
   document.getElementById('bar-score10-row').style.display          = mode === 4 ? '' : 'none';
   _updateMinimalistRows();
@@ -5883,6 +5911,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
       document.getElementById('cfg-sash-text-color-picker').value = '#' + _stcVal;
   }
   if (p.has('sash_winner_star')) _setEl('tog-sash-winner-star',  p.get('sash_winner_star'));
+  if (p.has('label_font'))       _setEl('cfg-label-font', p.get('label_font'));
   if (p.has('cinema_greyscale')) _setEl('tog-cinema-greyscale', p.get('cinema_greyscale'));
   if (p.has('cinema_greyscale_skip_if_available')) _setEl('tog-cinema-greyscale-skip', p.get('cinema_greyscale_skip_if_available'));
   if (p.has('release_status_cinema_only')) _setEl('tog-release-cinema-only', p.get('release_status_cinema_only'));
@@ -5948,6 +5977,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   if (p.has('accent_bar_bottom_ratio'))        _setEl('cfg-bar-bottom',   p.get('accent_bar_bottom_ratio'));
   if (p.has('numeric_score_font_size_ratio'))  _setEl('cfg-font-mode2',   p.get('numeric_score_font_size_ratio'));
   if (p.has('score_out_of_10'))                _setEl('tog-score-out-of-10', p.get('score_out_of_10'));
+  if (p.has('numeric_score_separator'))        _setEl('tog-numeric-dot-separator', p.get('numeric_score_separator') === 'dot');
   if (p.has('accent_bar_y_offset'))            _setEl('cfg-y-mode1',      p.get('accent_bar_y_offset'));
   if (p.has('numeric_score_y_offset'))         _setEl('cfg-y-mode2',      p.get('numeric_score_y_offset'));
   if (p.has('minimalist_append_mode'))         _setEl('cfg-min-append',   p.get('minimalist_append_mode'));
@@ -5966,8 +5996,11 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   if (p.has('bar_font_size_ratio')) _setEl('cfg-bar-font',   p.get('bar_font_size_ratio'));
   if (p.has('bar_frost_opacity'))   _setEl('cfg-bar-frost',  p.get('bar_frost_opacity'));
   if (p.has('bar_frost_saturation')) _setEl('cfg-bar-frost-sat', p.get('bar_frost_saturation'));
-  { const _ref = p.has('frost_reference') ? p.get('frost_reference') : 'false';
-    _setEl('tog-bar-frost-reference', _ref); _setEl('tog-sash-frost-reference', _ref);
+  { const _raw = p.has('frost_reference') ? p.get('frost_reference').trim().toLowerCase() : 'pastel';
+    const _ref = (_raw === 'match' || _raw === 'auto') ? 'match'
+               : (_raw === 'true' || _raw === '1' || _raw === 'reference') ? 'reference'
+               : 'pastel';
+    _setEl('cfg-bar-frost-reference', _ref); _setEl('cfg-sash-frost-reference', _ref);
     updateBadgeStyleFields(); }  // refresh which saturation slider hides
   if (!preserveClientInsets && p.has('bar_bottom_inset')) _setEl('cfg-bar-inset', p.get('bar_bottom_inset'));
   if (p.has('score_glow_threshold'))           _setEl('cfg-glow-thresh',  p.get('score_glow_threshold'));

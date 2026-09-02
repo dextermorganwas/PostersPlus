@@ -15,7 +15,7 @@ except ImportError:
     logger.warning("pycairo not available — shape edges will use PIL (no antialiasing)")
 
 from awards import (FETCH_FAILED, _FetchFailed, _RateLimited, dominant_frost_rgb,
-                    _frost_ink, _frosted_tint)
+                    _frost_ink, _frosted_tint, _label_font_path, _draw_label_text)
 from config import (
     GENRE_MAP,
     GENRE_PRIORITY,
@@ -497,6 +497,7 @@ def draw_frosted_bar(
     fill_color: tuple[int, int, int] | None = None,
     tint_rgb: tuple[float, float, float] | None = None,
     text_color: tuple[int, int, int] | None = None,
+    font_name: str = "inter",
 ) -> Image.Image:
     """Full-width frosted glass or dark-body strip near the bottom of the poster.
 
@@ -518,9 +519,7 @@ def draw_frosted_bar(
 
     # ── Font ─────────────────────────────────────────────────────────────────
     font_size = max(10, int(bar_h * font_size_ratio))
-    font_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "fonts", "Inter-Bold.ttf"
-    )
+    font_path = _label_font_path(font_name)
     try:
         font = ImageFont.truetype(font_path, font_size)
     except IOError:
@@ -653,12 +652,12 @@ def draw_frosted_bar(
 
     if center_text:
         cw = int(td.textlength(center_text, font=font))
-        td.text(((width - cw) // 2, text_y), center_text, font=font, fill=ink)
+        _draw_label_text(td, ((width - cw) // 2, text_y), center_text, font, font_name, ink, font_size)
     if left_text:
-        td.text((h_pad, text_y), left_text, font=font, fill=ink)
+        _draw_label_text(td, (h_pad, text_y), left_text, font, font_name, ink, font_size)
     if right_text:
         rw = int(td.textlength(right_text, font=font))
-        td.text((width - h_pad - rw, text_y), right_text, font=font, fill=ink)
+        _draw_label_text(td, (width - h_pad - rw, text_y), right_text, font, font_name, ink, font_size)
 
     bar_final = Image.alpha_composite(bar_img, txt_layer)
     result    = image.copy()

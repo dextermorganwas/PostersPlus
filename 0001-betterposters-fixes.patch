@@ -1,0 +1,576 @@
+From 78eca512781311077e47766438180d759475cf41 Mon Sep 17 00:00:00 2001
+From: you <you@example.com>
+Date: Tue, 1 Sep 2026 23:53:58 +0000
+Subject: [PATCH] Add BetterPosters-style dark/light auto sash-colour mode,
+ sash/notch/bar font choice, Clean-mode dot separator
+
+- New frost_reference=match ("Auto") mode for the frosted rating bar, notch
+  badge and diagonal sash: keeps the poster colour's own lightness (can go
+  genuinely dark on dark art) and auto-flips label text between black and
+  white for contrast, instead of the old Pastel/Reference modes' hardcoded
+  brightness floor that made a dark bar impossible.
+- New label_font option (inter/bebas/oswald/playfair/notoserif/ubuntu) shared
+  by the sash, notch badge and frosted bar, with a per-character fallback to
+  Inter for the star glyph (none of the other bundled display faces carry a
+  U+2605 glyph).
+- New numeric_score_separator=dot option for Clean mode (rating_display_mode
+  2): inserts a middle dot between the genre and the star rating.
+- configurator.html: Reference Colour checkbox replaced with a 3-way
+  Pastel/Reference/Auto segmented control (bar + sash panels, kept in sync),
+  new Label Font dropdown, new Dot separator toggle for Clean mode.
+All existing tests (383 passed, 1 skipped) still pass unchanged.
+---
+ awards.py         | 82 ++++++++++++++++++++++++++++++++++++++-----
+ configurator.html | 89 ++++++++++++++++++++++++++++++++---------------
+ main.py           | 59 +++++++++++++++++++++++++++----
+ ratings.py        | 13 ++++---
+ 4 files changed, 193 insertions(+), 50 deletions(-)
+
+diff --git a/awards.py b/awards.py
+index 90cf696..6d6af81 100644
+--- a/awards.py
++++ b/awards.py
+@@ -29,6 +29,69 @@ class _FetchFailed:
+ FETCH_FAILED = _FetchFailed()
+ 
+ 
++# ---------------------------------------------------------------------------
++# Sash / badge label fonts
++# ---------------------------------------------------------------------------
++# Selectable font for the diagonal award sash and the notch badge label text.
++# "inter" (default) is the original hardcoded font — every existing saved
++# render/URL is unaffected. The others are bundled under fonts/ already (they
++# back the genre-aware fallback-title feature) so no new asset is needed.
++# "bebas" is the closest bundled match to the tall, condensed, all-caps look
++# BetterPosters' own sash ribbons use.
++LABEL_FONT_FILES: dict[str, str] = {
++    "inter":    "Inter-Bold.ttf",
++    "bebas":    "BebasNeue-Bold.ttf",
++    "oswald":   "Oswald-Bold.ttf",
++    "playfair": "PlayfairDisplay-Bold.ttf",
++    "notoserif": "NotoSerif-Bold.ttf",
++    "ubuntu":   "Ubuntu-Bold.ttf",
++}
++
++
++def _label_font_path(font_name: str | None) -> str:
++    fname = LABEL_FONT_FILES.get((font_name or "inter").strip().lower(), LABEL_FONT_FILES["inter"])
++    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", fname)
++
++
++# None of the bundled display faces below carry a ★ glyph (checked against
++# their cmaps) — PIL silently falls back to the font's .notdef box, which
++# reads as a broken tofu square wherever a rating star is drawn. Inter does
++# have the glyph, so _draw_label_text substitutes it in per-character rather
++# than refusing the font choice outright.
++_LABEL_FONT_MISSING_GLYPHS: dict[str, frozenset] = {
++    "bebas":     frozenset("★"),
++    "oswald":    frozenset("★"),
++    "playfair":  frozenset("★"),
++    "notoserif": frozenset("★"),
++    "ubuntu":    frozenset("★"),
++}
++
++
++def _draw_label_text(draw: "ImageDraw.ImageDraw", xy: tuple[float, float], text: str,
++                      font, font_name: str, fill, size: int) -> None:
++    """draw.text(), except any character *font_name* is known not to carry a
++    glyph for (currently just ★) is substituted with Inter at the same size.
++    Falls back to a single draw() call whenever nothing needs substituting —
++    which is every call for Inter itself, and most calls for the others."""
++    missing = _LABEL_FONT_MISSING_GLYPHS.get(font_name)
++    if not missing or not any(ch in missing for ch in text):
++        draw.text(xy, text, font=font, fill=fill)
++        return
++    fallback = ImageFont.truetype(_label_font_path("inter"), size)
++    x, y = xy
++    segment, seg_font = "", (fallback if text[0] in missing else font)
++    for ch in text:
++        ch_font = fallback if ch in missing else font
++        if ch_font is seg_font:
++            segment += ch
++        else:
++            draw.text((x, y), segment, font=seg_font, fill=fill)
++            x += draw.textlength(segment, font=seg_font)
++            seg_font, segment = ch_font, ch
++    if segment:
++        draw.text((x, y), segment, font=seg_font, fill=fill)
++
++
+ class _RateLimited:
+     """
+     Returned when a fetch was rejected with HTTP 429.
+@@ -1470,6 +1533,7 @@ def draw_award_badge(
+     tint_rgb: tuple[float, float, float] | None = None,  # whole-poster colour (from un-graded art)
+     star: bool | None = None,         # override ★ decision (resolved on canonical label)
+     text_color: tuple[int, int, int] | None = None,  # override default white text
++    font_name: str = "inter",         # see LABEL_FONT_FILES
+ ) -> Image.Image:
+     """
+     Centred notch badge that emerges from the top edge of the poster.
+@@ -1536,10 +1600,9 @@ def draw_award_badge(
+     base_h = int(height * 0.075 * size_ratio_h)
+ 
+     # ── Font: fixed size so every label renders at the same scale ────────────
+-    _fonts_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+     font_size_ss = int(base_h * font_size_ratio) * SS
+     try:
+-        font = ImageFont.truetype(os.path.join(_fonts_dir, "Inter-Bold.ttf"), font_size_ss)
++        font = ImageFont.truetype(_label_font_path(font_name), font_size_ss)
+     except IOError:
+         font = ImageFont.load_default()
+ 
+@@ -1646,7 +1709,7 @@ def draw_award_badge(
+         tx, ty = _text_center(td, label, font, bw / 2, text_cy_ss)
+         # (text_color is deliberately not consulted here: this style has always
+         # ignored it, and honouring it now would restyle existing posters.)
+-        td.text((tx, ty), label, font=font, fill=(*_frost_ink(fr_r, fr_g, fr_b), 245))
++        _draw_label_text(td, (tx, ty), label, font, font_name, (*_frost_ink(fr_r, fr_g, fr_b), 245), font_size_ss)
+         badge_ss = Image.alpha_composite(badge_ss, txt_layer)
+ 
+         badge_final = badge_ss.resize((badge_w, badge_h), Image.Resampling.LANCZOS)
+@@ -1669,7 +1732,7 @@ def draw_award_badge(
+         td = ImageDraw.Draw(txt_layer)
+         tx, ty = _text_center(td, label, font, bw / 2, text_cy_ss)
+         _txt_rgb_black = text_color if text_color is not None else (210, 210, 218)
+-        td.text((tx, ty), label, font=font, fill=(*_txt_rgb_black, 245))
++        _draw_label_text(td, (tx, ty), label, font, font_name, (*_txt_rgb_black, 245), font_size_ss)
+         badge_ss = Image.alpha_composite(badge_ss, txt_layer)
+         badge_final = badge_ss.resize((badge_w, badge_h), Image.Resampling.LANCZOS)
+         result = image.copy()
+@@ -1784,8 +1847,8 @@ def draw_award_badge(
+     td = ImageDraw.Draw(txt_layer)
+     tx, ty = _text_center(td, label, font, bw // 2, text_cy_ss)
+     _txt_rgb = text_color if text_color is not None else (255, 255, 255)
+-    td.text((tx + SS, ty + SS), label, font=font, fill=(0, 0, 0, 160))
+-    td.text((tx, ty),           label, font=font, fill=(*_txt_rgb, 235))
++    _draw_label_text(td, (tx + SS, ty + SS), label, font, font_name, (0, 0, 0, 160), font_size_ss)
++    _draw_label_text(td, (tx, ty),           label, font, font_name, (*_txt_rgb, 235), font_size_ss)
+     badge = Image.alpha_composite(badge, txt_layer)
+ 
+     # ── Downscale → composite ────────────────────────────────────────────────
+@@ -1890,6 +1953,7 @@ def draw_award_sash(
+     frost_reference: bool = False,
+     star: bool = False,
+     text_color: tuple[int, int, int] | None = None,
++    font_name: str = "inter",
+ ) -> Image.Image:
+     if star:
+         label = f"★  {label}"
+@@ -1958,7 +2022,7 @@ def draw_award_sash(
+ 
+     font: Any
+     try:
+-        font = ImageFont.truetype(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Inter-Bold.ttf"), font_size)
++        font = ImageFont.truetype(_label_font_path(font_name), font_size)
+     except IOError:
+         font = ImageFont.load_default()
+ 
+@@ -1970,8 +2034,8 @@ def draw_award_sash(
+ 
+     _txt_rgb = text_color if text_color is not None else (225, 225, 225)
+     tx, ty = _text_center(td, label, font, band_cx, band_cy)
+-    td.text((tx + 2 * SS, ty + 2 * SS), label, font=font, fill=(0, 0, 0, 180))
+-    td.text((tx, ty),                   label, font=font, fill=(*_txt_rgb, 225))
++    _draw_label_text(td, (tx + 2 * SS, ty + 2 * SS), label, font, font_name, (0, 0, 0, 180), font_size)
++    _draw_label_text(td, (tx, ty),                   label, font, font_name, (*_txt_rgb, 225), font_size)
+ 
+     sash = Image.alpha_composite(sash, text_layer)
+ 
+diff --git a/configurator.html b/configurator.html
+index 246a28e..b06125d 100644
+--- a/configurator.html
++++ b/configurator.html
+@@ -2695,11 +2695,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
+                   </div>
+                 </div>
+                 <div class="toggle-row" id="bar-reference-row">
+-                  <span class="toggle-label" data-tip="Match the poster's true colour instead of the saturation tint.">Reference Colour</span>
+-                  <label class="toggle-switch">
+-                    <input type="checkbox" id="tog-bar-frost-reference" onchange="onFrostReferenceChange(this)">
+-                    <div class="toggle-track"><div class="toggle-thumb"></div></div>
+-                  </label>
++                  <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the bar can go genuinely dark on dark art, and the text automatically flips light/dark to match, the way BetterPosters' sashes do.">Colour Mode</span>
++                  <select class="segmented-source" id="cfg-bar-frost-reference" onchange="onFrostReferenceChange(this)">
++                    <option value="pastel" selected>Pastel</option>
++                    <option value="reference">Reference</option>
++                    <option value="match">Auto</option>
++                  </select>
++                  <div class="segmented" data-for="cfg-bar-frost-reference"></div>
+                 </div>
+                 <div class="field" id="bar-saturation-field">
+                   <label class="field-label">Colour Saturation</label>
+@@ -2762,6 +2764,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
+                   <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                 </label>
+               </div>
++              <div class="toggle-row score10-row" id="numeric-dot-separator-row" style="display:none;">
++                <span class="toggle-label" data-tip="Inserts a middle-dot between the genre and the star rating, e.g. &quot;Adventure &middot; &#9733; 7.3&quot; instead of &quot;Adventure &#9733; 7.3&quot;.">Dot separator</span>
++                <label class="toggle-switch">
++                  <input type="checkbox" id="tog-numeric-dot-separator" onchange="build(); queuePreviewReload()">
++                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
++                </label>
++              </div>
+               <div class="toggle-row score10-row" id="minimalist-score10-row" style="display:none;">
+                 <span class="toggle-label">Display score out of 10</span>
+                 <label class="toggle-switch">
+@@ -2902,6 +2911,17 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
+                   <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                 </label>
+               </div>
++              <div class="field">
++                <label class="field-label" data-tip="Font used by the diagonal sash, the notch badge and the frosted rating bar's label text — one setting, shared everywhere. Bebas Neue is the closest bundled match to BetterPosters' tall condensed sash lettering.">Label Font</label>
++                <select id="cfg-label-font" onchange="build(); queuePreviewReload()">
++                  <option value="inter" selected>Inter (default)</option>
++                  <option value="bebas">Bebas Neue</option>
++                  <option value="oswald">Oswald</option>
++                  <option value="playfair">Playfair Display</option>
++                  <option value="notoserif">Noto Serif</option>
++                  <option value="ubuntu">Ubuntu</option>
++                </select>
++              </div>
+               <div class="toggle-row" id="sash-muted-row">
+                 <span class="toggle-label" data-tip="Reduce sash opacity slightly.">Muted Sashes</span>
+                 <label class="toggle-switch">
+@@ -2926,11 +2946,13 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
+                 </label>
+               </div>
+               <div class="toggle-row" id="sash-reference-row" style="display:none;">
+-                <span class="toggle-label" data-tip="Match the poster's true colour instead of the saturation tint. Frosted notch only.">Reference Colour</span>
+-                <label class="toggle-switch">
+-                  <input type="checkbox" id="tog-sash-frost-reference" onchange="onFrostReferenceChange(this)">
+-                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+-                </label>
++                <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the notch can go genuinely dark on dark art, and the text automatically flips light/dark to match. Frosted notch only.">Colour Mode</span>
++                <select class="segmented-source" id="cfg-sash-frost-reference" onchange="onFrostReferenceChange(this)">
++                  <option value="pastel" selected>Pastel</option>
++                  <option value="reference">Reference</option>
++                  <option value="match">Auto</option>
++                </select>
++                <div class="segmented" data-for="cfg-sash-frost-reference"></div>
+               </div>
+             </div>
+ 
+@@ -4667,8 +4689,8 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
+ 
+   // ── Rating / Genre Label ───────────────────────────────────────────────────
+   params.set('rating_display_mode', ratingMode);
+-  // Global frosted colour mode (bar, notch and sash share it).
+-  if (c('tog-bar-frost-reference')) params.set('frost_reference', 'true');
++  // Global frosted colour mode (bar, notch and sash share it): pastel | reference | match.
++  params.set('frost_reference', vEl('cfg-bar-frost-reference') || 'pastel');
+   if (ratingMode !== 0) {
+     // Colour palette: exposed for the modes whose pip/score colour visibly uses it
+     if (ratingMode === 1 || ratingMode === 3) {
+@@ -4690,6 +4712,7 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
+       params.set('numeric_score_font_size_ratio', n('cfg-font-mode2').toFixed(3));
+       params.set('numeric_score_y_offset',        n('cfg-y-mode2').toFixed(2));
+       params.set('score_out_of_10',               c('tog-score-out-of-10') ? 'true' : 'false');
++      params.set('numeric_score_separator',        c('tog-numeric-dot-separator') ? 'dot' : 'none');
+     } else if (ratingMode === 3) {
+       params.set('minimalist_append_mode',          ni('cfg-min-append'));
+       params.set('minimalist_mode_font_size_ratio', n('cfg-font-mode3').toFixed(3));
+@@ -4778,6 +4801,9 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
+   params.set('cinema_greyscale', c('tog-cinema-greyscale') ? 'true' : 'false');
+   params.set('cinema_greyscale_skip_if_available', c('tog-cinema-greyscale-skip') ? 'true' : 'false');
+   params.set('release_status_cinema_only', c('tog-release-cinema-only') ? 'true' : 'false');
++  // Shared by the sash, notch badge and frosted rating bar alike, so it's sent
++  // regardless of whether the sash itself is shown.
++  params.set('label_font', vEl('cfg-label-font') || 'inter');
+ 
+   if (showSash) {
+     if (c('tog-sash-winner-star')) params.set('sash_winner_star', 'true');
+@@ -5192,7 +5218,7 @@ function updateBadgeStyleFields() {
+   // used to be safe because the reference toggle sat inside #sash-badge-offsets
+   // and was hidden with it; it now lives in the Behaviour group, which stays.
+   const isFrosted = vEl('cfg-sash-mode') === 'notch' && vEl('cfg-sash-badge-style') === 'frosted';
+-  const ref = c('tog-sash-frost-reference');
++  const ref = vEl('cfg-sash-frost-reference') !== 'pastel';
+   document.getElementById('sash-badge-opacity-field').style.display = isFrosted ? '' : 'none';
+   document.getElementById('sash-reference-row').style.display = isFrosted ? '' : 'none';
+   document.getElementById('sash-vignette-color-row').style.display = isFrosted ? '' : 'none';
+@@ -5202,16 +5228,17 @@ function updateBadgeStyleFields() {
+   _updateBarRatingRows();
+ }
+ 
+-// Reference Colour is one global setting shown in whichever panel owns the
+-// saturation control (Rating, or Sash for a frosted notch). Keep both toggles in
+-// sync and refresh which saturation slider is visible.
+-// Reference Colour and Match Tinted Vignette both decide how the frosted tint
+-// is built, and matching already implies reference behaviour — so they are one
+-// choice, not two, and turning either on releases the other.
++// Colour Mode (Pastel / Reference / Auto) is one global setting shown in
++// whichever panel owns the saturation control (Rating, or Sash for a frosted
++// notch). Keep both selects in sync and refresh which saturation slider is
++// visible. Colour Mode and Match Tinted Vignette both decide how the frosted
++// tint is built, and matching already implies Auto behaviour — so they are one
++// choice, not two, and turning Match Tinted Vignette on resets Colour Mode
++// back to Pastel everywhere else.
+ function onNotchVignetteColorChange(el) {
+   if (el.checked) {
+-    _setEl('tog-sash-frost-reference', false);
+-    _setEl('tog-bar-frost-reference', false);
++    _setEl('cfg-sash-frost-reference', 'pastel');
++    _setEl('cfg-bar-frost-reference', 'pastel');
+     updateBadgeStyleFields();
+   }
+   build();
+@@ -5219,10 +5246,10 @@ function onNotchVignetteColorChange(el) {
+ }
+ 
+ function onFrostReferenceChange(el) {
+-  if (el.checked) _setEl('tog-notch-vignette-color', false);
+-  const on = el.checked;
+-  _setEl('tog-bar-frost-reference',  on ? 'true' : 'false');
+-  _setEl('tog-sash-frost-reference', on ? 'true' : 'false');
++  const val = el.value;
++  if (val !== 'pastel') _setEl('tog-notch-vignette-color', false);
++  _setEl('cfg-bar-frost-reference',  val);
++  _setEl('cfg-sash-frost-reference', val);
+   updateBadgeStyleFields();
+   build();
+   queuePreviewReload();
+@@ -5257,7 +5284,7 @@ function _updateBarRatingRows() {
+   // so they live in the Sash panel then and hide here. Otherwise they live in
+   // Rating. The saturation slider also hides when Reference Colour is on.
+   const frostedNotch = vEl('cfg-sash-mode') === 'notch' && vEl('cfg-sash-badge-style') === 'frosted';
+-  const ref = c('tog-bar-frost-reference');
++  const ref = vEl('cfg-bar-frost-reference') !== 'pastel';
+   document.getElementById('bar-reference-row').style.display = frostedNotch ? 'none' : '';
+   document.getElementById('bar-saturation-field').style.display = (frostedNotch || ref) ? 'none' : '';
+ }
+@@ -5516,6 +5543,7 @@ function updateRatingFields() {
+   document.getElementById('rating-glow-fields').style.display       = mode === 1 ? '' : 'none';
+   document.getElementById('rating-alt-colors-toggle').style.display = (mode === 1 || mode === 3) ? '' : 'none';
+   document.getElementById('numeric-score10-row').style.display      = mode === 2 ? '' : 'none';
++  document.getElementById('numeric-dot-separator-row').style.display = mode === 2 ? '' : 'none';
+   document.getElementById('minimalist-score10-row').style.display   = mode === 3 ? '' : 'none';
+   document.getElementById('bar-score10-row').style.display          = mode === 4 ? '' : 'none';
+   _updateMinimalistRows();
+@@ -5883,6 +5911,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
+       document.getElementById('cfg-sash-text-color-picker').value = '#' + _stcVal;
+   }
+   if (p.has('sash_winner_star')) _setEl('tog-sash-winner-star',  p.get('sash_winner_star'));
++  if (p.has('label_font'))       _setEl('cfg-label-font', p.get('label_font'));
+   if (p.has('cinema_greyscale')) _setEl('tog-cinema-greyscale', p.get('cinema_greyscale'));
+   if (p.has('cinema_greyscale_skip_if_available')) _setEl('tog-cinema-greyscale-skip', p.get('cinema_greyscale_skip_if_available'));
+   if (p.has('release_status_cinema_only')) _setEl('tog-release-cinema-only', p.get('release_status_cinema_only'));
+@@ -5948,6 +5977,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
+   if (p.has('accent_bar_bottom_ratio'))        _setEl('cfg-bar-bottom',   p.get('accent_bar_bottom_ratio'));
+   if (p.has('numeric_score_font_size_ratio'))  _setEl('cfg-font-mode2',   p.get('numeric_score_font_size_ratio'));
+   if (p.has('score_out_of_10'))                _setEl('tog-score-out-of-10', p.get('score_out_of_10'));
++  if (p.has('numeric_score_separator'))        _setEl('tog-numeric-dot-separator', p.get('numeric_score_separator') === 'dot');
+   if (p.has('accent_bar_y_offset'))            _setEl('cfg-y-mode1',      p.get('accent_bar_y_offset'));
+   if (p.has('numeric_score_y_offset'))         _setEl('cfg-y-mode2',      p.get('numeric_score_y_offset'));
+   if (p.has('minimalist_append_mode'))         _setEl('cfg-min-append',   p.get('minimalist_append_mode'));
+@@ -5966,8 +5996,11 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
+   if (p.has('bar_font_size_ratio')) _setEl('cfg-bar-font',   p.get('bar_font_size_ratio'));
+   if (p.has('bar_frost_opacity'))   _setEl('cfg-bar-frost',  p.get('bar_frost_opacity'));
+   if (p.has('bar_frost_saturation')) _setEl('cfg-bar-frost-sat', p.get('bar_frost_saturation'));
+-  { const _ref = p.has('frost_reference') ? p.get('frost_reference') : 'false';
+-    _setEl('tog-bar-frost-reference', _ref); _setEl('tog-sash-frost-reference', _ref);
++  { const _raw = p.has('frost_reference') ? p.get('frost_reference').trim().toLowerCase() : 'pastel';
++    const _ref = (_raw === 'match' || _raw === 'auto') ? 'match'
++               : (_raw === 'true' || _raw === '1' || _raw === 'reference') ? 'reference'
++               : 'pastel';
++    _setEl('cfg-bar-frost-reference', _ref); _setEl('cfg-sash-frost-reference', _ref);
+     updateBadgeStyleFields(); }  // refresh which saturation slider hides
+   if (!preserveClientInsets && p.has('bar_bottom_inset')) _setEl('cfg-bar-inset', p.get('bar_bottom_inset'));
+   if (p.has('score_glow_threshold'))           _setEl('cfg-glow-thresh',  p.get('score_glow_threshold'));
+diff --git a/main.py b/main.py
+index c55c8d3..d2ecd6d 100644
+--- a/main.py
++++ b/main.py
+@@ -561,6 +561,7 @@ from age_badge import draw_quality_age_badge, draw_quality_corner_bookmark, draw
+ from landscape import build_landscape
+ from awards import _dominant_cluster, _is_skin_tone, dominant_frost_rgb
+ from awards import FETCH_FAILED, _RateLimited, draw_award_badge, draw_award_sash, parse_mdblist_awards
++from awards import LABEL_FONT_FILES
+ from festivals import match_festival_keyword
+ from i18n import load_languages, translate_genre, translate_sash
+ from cache import (
+@@ -992,6 +993,10 @@ class RequestConfig:
+     # 10 and shown to one decimal (87 → "8.7", 100 → "10.0").  Default keeps
+     # the legacy 0-100 integer form.
+     score_out_of_10: bool = False
++    # Clean mode (mode 2) genre/rating separator. "none" (default) keeps the
++    # legacy single space ("Adventure ★ 7.3"); "dot" inserts " · " so the two
++    # fields read distinctly ("Adventure · ★ 7.3").
++    numeric_score_separator: str = "none"
+     accent_bar_y_offset:           float = field(default_factory=lambda: _cfg.ACCENT_BAR_MODE_FONT_Y_OFFSET)
+     numeric_score_y_offset:        float = field(default_factory=lambda: _cfg.NUMERIC_SCORE_MODE_FONT_Y_OFFSET)
+     score_glow_threshold:          int   = field(default_factory=lambda: _cfg.SCORE_GLOW_THRESHOLD)
+@@ -1154,13 +1159,27 @@ class RequestConfig:
+     notch_vignette_color: bool = False
+     # Reference colour mode: match the frosted tint to the poster's true colour
+     # (bolder, un-pastel) instead of the saturation-scaled frosted tint. Global.
+-    frost_reference:         bool  = False
++    # False   → "Pastel": saturation-scaled frosted tint, always light, dark text.
++    # True    → "Reference": true poster hue/saturation lifted to a bright value,
++    #           still always light, dark text.
++    # "match" → "Auto": the frosted tint keeps the poster colour's own lightness
++    #           (can land genuinely dark on dark art), and the label ink follows —
++    #           light text on a dark panel, dark text on a light one. This is
++    #           what previously only happened automatically when a tinted
++    #           vignette confidently matched; exposing it directly lets the bar
++    #           and sash go dark-on-dark without needing the vignette involved.
++    frost_reference:         "bool | str" = False
+     sash_length_ratio: float = 1.15  # diagonal sash length as fraction of poster width
+     sash_height_ratio: float = 0.12  # diagonal sash height (thickness) as fraction of poster width
+     wait_for_quality: bool = False  # block response until quality is fetched (for poster-warm workflows)
+     greyscale_no_quality: bool = False  # greyscale art when no quality found (needs wait_for_quality)
+     rating_text_color: tuple[int, int, int] | None = None
+     sash_text_color:   tuple[int, int, int] | None = None
++    # Label font shared by the diagonal sash, the notch badge and the frosted
++    # rating bar. One of: inter (default/legacy) | bebas | oswald | playfair |
++    # notoserif | ubuntu. "bebas" is the closest bundled match to the tall,
++    # condensed, all-caps look BetterPosters' own sash ribbons use.
++    label_font: str = "inter"
+ 
+ 
+ def _parse_bool(val: str | None, default: bool) -> bool:
+@@ -1169,6 +1188,23 @@ def _parse_bool(val: str | None, default: bool) -> bool:
+     return val.strip().lower() not in ("0", "false", "no")
+ 
+ 
++def _parse_frost_mode(val: str | None, default: "bool | str") -> "bool | str":
++    """Tri-state parse for frost_reference: false/true keep their old meaning
++    ("pastel" / "reference"); "match" (or "auto") is the new true-lightness,
++    auto-contrast mode. Anything unrecognised falls back to *default* rather
++    than raising, since this runs per request."""
++    if val is None:
++        return default
++    v = val.strip().lower()
++    if v in ("match", "auto"):
++        return "match"
++    if v in ("0", "false", "no", "pastel", "sample"):
++        return False
++    if v in ("1", "true", "yes", "reference"):
++        return True
++    return default
++
++
+ def _parse_hex_color(val: str | None) -> tuple[int, int, int] | None:
+     if not val:
+         return None
+@@ -1320,7 +1356,8 @@ def build_request_config(params: dict) -> RequestConfig:
+     cfg.cinema_greyscale_skip_if_available = _b("cinema_greyscale_skip_if_available", cfg.cinema_greyscale_skip_if_available)
+     cfg.release_status_cinema_only = _b("release_status_cinema_only", cfg.release_status_cinema_only)
+     cfg.muted                   = _b("muted",                  cfg.muted)
+-    cfg.score_out_of_10         = _b("score_out_of_10",        cfg.score_out_of_10)
++    cfg.score_out_of_10         = _b("score_out_of_10",        cfg.score_out_of_10)
++    cfg.numeric_score_separator = params.get("numeric_score_separator", cfg.numeric_score_separator) or cfg.numeric_score_separator
+     cfg.textless                = _b("textless",               cfg.textless)
+     # top_gradient accepts off / low / medium / high.  Legacy boolean values
+     # (true / false) from pre-v1.0.4 URLs map to high / off respectively so
+@@ -1461,7 +1498,7 @@ def build_request_config(params: dict) -> RequestConfig:
+     cfg.bar_font_size_ratio     = _f("bar_font_size_ratio",     cfg.bar_font_size_ratio,     0.15, 0.70)
+     cfg.bar_frost_opacity       = _f("bar_frost_opacity",       cfg.bar_frost_opacity,       0.0,  1.0)
+     cfg.bar_frost_saturation    = _f("bar_frost_saturation",    cfg.bar_frost_saturation,    0.0,  2.0)
+-    cfg.frost_reference         = _b("frost_reference",         cfg.frost_reference)
++    cfg.frost_reference         = _parse_frost_mode(params.get("frost_reference"), cfg.frost_reference)
+     cfg.bar_bottom_inset        = _f("bar_bottom_inset",        cfg.bar_bottom_inset,        0.0,  0.10)
+     _bst = (params.get("bar_style") or "").strip().lower()
+     if _bst in ("frosted", "pure_black", "silver", "gold", "rating_black", "rating_frosted"):
+@@ -1533,6 +1570,8 @@ def build_request_config(params: dict) -> RequestConfig:
+     cfg.sash_priority        = _parse_sash_priority(params.get("sash_priority"))
+     cfg.rating_text_color    = _parse_hex_color(params.get("rating_text_color"))
+     cfg.sash_text_color      = _parse_hex_color(params.get("sash_text_color"))
++    _label_font_in           = (params.get("label_font") or cfg.label_font).strip().lower()
++    cfg.label_font           = _label_font_in if _label_font_in in LABEL_FONT_FILES else cfg.label_font
+ 
+     return cfg
+ 
+@@ -3136,7 +3175,12 @@ def build_poster(
+                 _score_text = "10" if score >= 100 else f"{score / 10:.1f}"
+             else:
+                 _score_text = str(score)
+-            label = f"{genre_label} ★ {_score_text}" if genre_label else f"★ {_score_text}"
++            # Separator between the genre and the star rating. Off by default
++            # (kept identical to legacy renders / saved URLs); "dot" inserts a
++            # " · " so a genre + rating pairing reads as two fields rather than
++            # running together — e.g. "Adventure · ★ 7.3".
++            _numeric_sep = " · " if cfg.numeric_score_separator == "dot" else " "
++            label = f"{genre_label}{_numeric_sep}★ {_score_text}" if genre_label else f"★ {_score_text}"
+             rating_cy = height * cfg.numeric_score_y_offset
+ 
+             try:
+@@ -3361,6 +3405,7 @@ def build_poster(
+                 ) if cfg.bar_style in ("rating_black", "rating_frosted") else None,
+                 tint_rgb         = _frost_tint,
+                 text_color       = cfg.rating_text_color,
++                font_name        = cfg.label_font,
+             )
+ 
+     # --- Discovery sash / badge ---
+@@ -3381,7 +3426,8 @@ def build_poster(
+                                      frost_reference=_frost_ref,
+                                      tint_rgb=_frost_tint,
+                                      star=_is_star,
+-                                     text_color=cfg.sash_text_color)
++                                     text_color=cfg.sash_text_color,
++                                     font_name=cfg.label_font)
+         else:  # "sash" — diagonal
+             _poster_color = _frost_tint if cfg.sash_poster_color else None
+             image = draw_award_sash(image, _label_tr, sash_type=sash_type, muted=cfg.muted,
+@@ -3391,7 +3437,8 @@ def build_poster(
+                                     frost_saturation=_frost_sat,
+                                     frost_reference=_frost_ref,
+                                     star=_is_star,
+-                                    text_color=cfg.sash_text_color)
++                                    text_color=cfg.sash_text_color,
++                                    font_name=cfg.label_font)
+ 
+     return image
+ 
+diff --git a/ratings.py b/ratings.py
+index 289c59a..6d9a36d 100644
+--- a/ratings.py
++++ b/ratings.py
+@@ -15,7 +15,7 @@ except ImportError:
+     logger.warning("pycairo not available — shape edges will use PIL (no antialiasing)")
+ 
+ from awards import (FETCH_FAILED, _FetchFailed, _RateLimited, dominant_frost_rgb,
+-                    _frost_ink, _frosted_tint)
++                    _frost_ink, _frosted_tint, _label_font_path, _draw_label_text)
+ from config import (
+     GENRE_MAP,
+     GENRE_PRIORITY,
+@@ -497,6 +497,7 @@ def draw_frosted_bar(
+     fill_color: tuple[int, int, int] | None = None,
+     tint_rgb: tuple[float, float, float] | None = None,
+     text_color: tuple[int, int, int] | None = None,
++    font_name: str = "inter",
+ ) -> Image.Image:
+     """Full-width frosted glass or dark-body strip near the bottom of the poster.
+ 
+@@ -518,9 +519,7 @@ def draw_frosted_bar(
+ 
+     # ── Font ─────────────────────────────────────────────────────────────────
+     font_size = max(10, int(bar_h * font_size_ratio))
+-    font_path = os.path.join(
+-        os.path.dirname(os.path.abspath(__file__)), "fonts", "Inter-Bold.ttf"
+-    )
++    font_path = _label_font_path(font_name)
+     try:
+         font = ImageFont.truetype(font_path, font_size)
+     except IOError:
+@@ -653,12 +652,12 @@ def draw_frosted_bar(
+ 
+     if center_text:
+         cw = int(td.textlength(center_text, font=font))
+-        td.text(((width - cw) // 2, text_y), center_text, font=font, fill=ink)
++        _draw_label_text(td, ((width - cw) // 2, text_y), center_text, font, font_name, ink, font_size)
+     if left_text:
+-        td.text((h_pad, text_y), left_text, font=font, fill=ink)
++        _draw_label_text(td, (h_pad, text_y), left_text, font, font_name, ink, font_size)
+     if right_text:
+         rw = int(td.textlength(right_text, font=font))
+-        td.text((width - h_pad - rw, text_y), right_text, font=font, fill=ink)
++        _draw_label_text(td, (width - h_pad - rw, text_y), right_text, font, font_name, ink, font_size)
+ 
+     bar_final = Image.alpha_composite(bar_img, txt_layer)
+     result    = image.copy()
+-- 
+2.43.0
+
