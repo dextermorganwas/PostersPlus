@@ -2539,17 +2539,17 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                   </div>
                 </div>
                 <div class="field">
-                  <label class="field-label">Font Position</label>
+                  <label class="field-label" data-tip="Higher = lower on the poster.">Font Position</label>
                   <div class="range-row">
                     <input type="range" id="cfg-y-mode1" min="0.70" max="0.98" step="0.01" value="0.90" oninput="updateRange(this,'rng-y1'); build(); queuePreviewReload()">
                     <span class="range-val" id="rng-y1">0.90</span>
                   </div>
                 </div>
                 <div class="field">
-                  <label class="field-label">Bar Position</label>
+                  <label class="field-label" data-tip="Higher = lower on the poster, same direction as Font Position above (this used to run the opposite way — increasing it moved the bar up — which read as backwards next to Font Position sitting right above it).">Bar Position</label>
                   <div class="range-row">
-                    <input type="range" id="cfg-bar-bottom" min="0.00" max="0.20" step="0.005" value="0.04" oninput="updateRange(this,'rng-bb'); build(); queuePreviewReload()">
-                    <span class="range-val" id="rng-bb">0.04</span>
+                    <input type="range" id="cfg-bar-bottom" min="0.00" max="0.20" step="0.005" value="0.16" oninput="updateRange(this,'rng-bb'); build(); queuePreviewReload()">
+                    <span class="range-val" id="rng-bb">0.16</span>
                   </div>
                 </div>
               </div>
@@ -2697,9 +2697,9 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                 <div class="toggle-row" id="bar-reference-row">
                   <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the bar can go genuinely dark on dark art, and the text automatically flips light/dark to match, the way BetterPosters' sashes do.">Colour Mode</span>
                   <select class="segmented-source" id="cfg-bar-frost-reference" onchange="onFrostReferenceChange(this)">
-                    <option value="pastel" selected>Pastel</option>
+                    <option value="pastel">Pastel</option>
                     <option value="reference">Reference</option>
-                    <option value="match">Auto</option>
+                    <option value="match" selected>Auto</option>
                   </select>
                   <div class="segmented" data-for="cfg-bar-frost-reference"></div>
                 </div>
@@ -2912,14 +2912,10 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                 </label>
               </div>
               <div class="field">
-                <label class="field-label" data-tip="Font used by the diagonal sash, the notch badge and the frosted rating bar's label text — one setting, shared everywhere. Bebas Neue is the closest bundled match to BetterPosters' tall condensed sash lettering.">Label Font</label>
+                <label class="field-label" data-tip="Font for the diagonal sash and the notch badge label text (the frosted rating bar always uses Inter — it's a separate section and sharing this setting was more confusing than useful). Inter (default) is the closer match to BetterPosters' own badges, which use a normal-weight title-case sans, not a condensed display face.">Label Font</label>
                 <select id="cfg-label-font" onchange="build(); queuePreviewReload()">
-                  <option value="inter" selected>Inter (default)</option>
-                  <option value="bebas">Bebas Neue</option>
+                  <option value="inter" selected>Inter (default — closest to BetterPosters)</option>
                   <option value="oswald">Oswald</option>
-                  <option value="playfair">Playfair Display</option>
-                  <option value="notoserif">Noto Serif</option>
-                  <option value="ubuntu">Ubuntu</option>
                 </select>
               </div>
               <div class="toggle-row" id="sash-muted-row">
@@ -2948,9 +2944,9 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
               <div class="toggle-row" id="sash-reference-row" style="display:none;">
                 <span class="toggle-label" data-tip="Pastel (default): the poster colour softened to a light frosted tint. Reference: the poster's true hue/saturation, still lifted bright. Auto: keeps the poster colour's own lightness — the notch can go genuinely dark on dark art, and the text automatically flips light/dark to match. Frosted notch only.">Colour Mode</span>
                 <select class="segmented-source" id="cfg-sash-frost-reference" onchange="onFrostReferenceChange(this)">
-                  <option value="pastel" selected>Pastel</option>
+                  <option value="pastel">Pastel</option>
                   <option value="reference">Reference</option>
-                  <option value="match">Auto</option>
+                  <option value="match" selected>Auto</option>
                 </select>
                 <div class="segmented" data-for="cfg-sash-frost-reference"></div>
               </div>
@@ -3172,6 +3168,16 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
             </div>
 
             <div class="cfg-sep">
+              <div class="field">
+                <label class="field-label" data-tip="A shortcut over the per-source sliders below, not a separate setting: each option here just sets those sliders for you (imdb + tmdb here, both weight grids below), so the URL it produces is the exact same movie_weights/tv_weights you'd get setting the sliders by hand. 'X, then Y' sets X to 99.9% and Y to 0.1% — heavily preferring X while it's available, and falling through cleanly to Y on the titles where X has nothing (the renormalisation described below promotes whatever source IS present to 100% share). Picking anything here overwrites every slider below, including any other sources you'd set non-zero; choose Custom to leave the sliders as they are.">Quick Rating Source</label>
+                <select id="cfg-rating-source-quick" onchange="applyQuickRatingSource(this.value)">
+                  <option value="custom" selected>Custom (use sliders below)</option>
+                  <option value="imdb_only">IMDb only</option>
+                  <option value="tmdb_only">TMDB only</option>
+                  <option value="imdb_then_tmdb">IMDb, then TMDB</option>
+                  <option value="tmdb_then_imdb">TMDB, then IMDb</option>
+                </select>
+              </div>
               <span class="group-title" data-tip="Normalization always reaches 100%. 99% Letterboxd + 1% Trakt becomes 100% Trakt if Letterboxd is missing.">Movies</span>
               <div class="weight-grid" id="movie-weights"></div>
               <div class="weight-total">
@@ -3854,6 +3860,54 @@ function buildWeightSection(containerId, sources, defaults) {
       </div>`;
   }).join('');
   updateWeightSum(containerId);
+}
+
+// "Quick Rating Source" is a convenience layer over the two weight grids —
+// it computes the same movie_weights/tv_weights an operator could set by
+// hand and rebuilds both grids from it, so nothing downstream (URL params,
+// backend, cache keys) needs to know this control exists.
+function applyQuickRatingSource(mode) {
+  if (mode === 'custom') return;
+  const overrides = {
+    imdb_only:       { imdb: 1.0 },
+    tmdb_only:        { tmdb: 1.0 },
+    imdb_then_tmdb:  { imdb: 0.999, tmdb: 0.001 },
+    tmdb_then_imdb:  { tmdb: 0.999, imdb: 0.001 },
+  };
+  const override = overrides[mode];
+  if (!override) return;
+  buildWeightSection('movie-weights', MOVIE_SOURCES, override);
+  buildWeightSection('tv-weights',    TV_SOURCES,    override);
+  build();
+  queuePreviewReload();
+}
+
+// Reverse of applyQuickRatingSource — used after a URL/preset import so the
+// dropdown reflects what the imported weights actually encode instead of
+// defaulting to "Custom" every time, even when they exactly match a preset.
+function _syncQuickRatingSourceSelect() {
+  const read = (containerId) => {
+    const out = {};
+    document.querySelectorAll(`#${containerId} input[data-container="${containerId}"]`).forEach(el => {
+      out[el.dataset.src] = parseFloat(el.value);
+    });
+    return out;
+  };
+  const nearly = (a, b) => Math.abs((a || 0) - b) < 0.005;
+  const matches = (weights, want) =>
+    Object.keys(weights).every(src => nearly(weights[src], want[src] || 0));
+  const movie = read('movie-weights'), tv = read('tv-weights');
+  const patterns = {
+    imdb_only:      { imdb: 1.0 },
+    tmdb_only:       { tmdb: 1.0 },
+    imdb_then_tmdb: { imdb: 0.999, tmdb: 0.001 },
+    tmdb_then_imdb: { tmdb: 0.999, imdb: 0.001 },
+  };
+  let found = 'custom';
+  for (const [name, want] of Object.entries(patterns)) {
+    if (matches(movie, want) && matches(tv, want)) { found = name; break; }
+  }
+  _setEl('cfg-rating-source-quick', found);
 }
 
 function updateWeightSum(containerId) {
@@ -4690,7 +4744,7 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
   // ── Rating / Genre Label ───────────────────────────────────────────────────
   params.set('rating_display_mode', ratingMode);
   // Global frosted colour mode (bar, notch and sash share it): pastel | reference | match.
-  params.set('frost_reference', vEl('cfg-bar-frost-reference') || 'pastel');
+  params.set('frost_reference', vEl('cfg-bar-frost-reference') || 'match');
   if (ratingMode !== 0) {
     // Colour palette: exposed for the modes whose pip/score colour visibly uses it
     if (ratingMode === 1 || ratingMode === 3) {
@@ -4700,7 +4754,10 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
       params.set('accent_bar_font_size_ratio', n('cfg-font-mode1').toFixed(3));
       params.set('accent_bar_y_offset',        n('cfg-y-mode1').toFixed(2));
       params.set('accent_bar_append_mode',     ni('cfg-bar-append'));
-      params.set('accent_bar_bottom_ratio',    n('cfg-bar-bottom').toFixed(3));
+      // Displayed slider runs opposite to the backend ratio (see the field's
+      // tooltip / commit message) so higher-on-screen = higher number, same
+      // direction as Font Position right above it.
+      params.set('accent_bar_bottom_ratio',    (0.20 - n('cfg-bar-bottom')).toFixed(3));
       params.set('score_glow_threshold', ni('cfg-glow-thresh'));
       params.set('score_glow_blur',      ni('cfg-glow-blur'));
       params.set('score_glow_alpha',     ni('cfg-glow-alpha'));
@@ -5593,6 +5650,13 @@ const _INFO_TITLES = {
 
 const PRESETS = [
   {
+    id: 'betterposters_style',
+    name: 'BetterPosters Style',
+    description: "PostersPlus's best approximation of BetterPosters' look (btttr.cc): Auto colour mode (badge/bar tint follows the poster's own lightness, text auto-flips light/dark), Inter label font, a rounded frosted corner badge instead of a bar, and plain \u201cGenre \u00b7 \u2605 Rating\u201d text with no background box. Not pixel-identical to a service PostersPlus doesn't integrate with — treat this as the closest starting point, then tweak from here.",
+    screenshot: '/static/presets/betterposters_style.jpg',
+    params: 'top_gradient=off&bottom_gradient=medium&fallback_to_imdb=true&rating_display_mode=2&numeric_score_font_size_ratio=0.075&numeric_score_y_offset=0.90&score_out_of_10=true&numeric_score_separator=dot&frost_reference=match&label_font=inter&movie_weights=letterboxd%3A0.99%2Ctrakt%3A0.01%2Ctomatoes%3A0.00%2Cpopcorn%3A0.00%2Cimdb%3A0.00%2Cmetacritic%3A0.00%2Cmetacriticuser%3A0.00%2Ctmdb%3A0.00%2Crogerebert%3A0.00%2Cmyanimelist%3A0.00&tv_weights=trakt%3A0.80%2Ctomatoes%3A0.20%2Cpopcorn%3A0.00%2Cimdb%3A0.00%2Cmetacritic%3A0.00%2Cmetacriticuser%3A0.00%2Ctmdb%3A0.00%2Cmyanimelist%3A0.00&textless=false&use_original_art=false&original_art_source=primary&logo_language=en&logo_priority=native_original&fallback_bg_style=photoreal&logo_max_w_ratio=0.75&logo_max_h_ratio=0.25&logo_bottom_ratio=0.28&sash_mode=notch&cinema_greyscale=true&cinema_greyscale_skip_if_available=false&release_status_cinema_only=false&sash_badge_style=frosted&sash_badge_size_w=1.30&sash_badge_size_h=1.10&sash_badge_pad=1.00&sash_badge_font_ratio=0.43&sash_badge_frost_opacity=0.80&sash_priority=wins%2Cgg_wins%2Cfestival%2Cpic_noms%2Cmetacritic%2Cgg_noms%2Ctrending%2Ctrending_broad%2Cpremiere%2Cnew_release%2Cjust_added%2Cnew_season%2Cseason_finale%2Cstudio%2Cdirector%2Ccast%2Ccult%2Cforeign%2Ctrue_story%2Cshort_film%2Cmini_series%2Cbinge_ready%2Creturning%2Cairing%2Ccancelled%2Cended%2Cphysical%2Cstreaming%2Ccinema%2Cproduction&badge_display_mode=0&top_vignette_sash_only=true',
+  },
+  {
     id: 'prestige_rating_bar',
     name: 'Prestige Rating Bar',
     description: 'Classic Posters+ design featuring a score bar using the prestige score palette, which uses grey, bronze and gold. Paired with the info sash and horizontal badge row.',
@@ -5974,7 +6038,10 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   if (p.has('rating_display_mode'))            _setEl('cfg-rating-mode',  p.get('rating_display_mode'));
   if (p.has('accent_bar_font_size_ratio'))     _setEl('cfg-font-mode1',   p.get('accent_bar_font_size_ratio'));
   if (p.has('accent_bar_append_mode'))         _setEl('cfg-bar-append',   p.get('accent_bar_append_mode'));
-  if (p.has('accent_bar_bottom_ratio'))        _setEl('cfg-bar-bottom',   p.get('accent_bar_bottom_ratio'));
+  if (p.has('accent_bar_bottom_ratio')) {
+    const _bbr = parseFloat(p.get('accent_bar_bottom_ratio'));
+    _setEl('cfg-bar-bottom', Number.isFinite(_bbr) ? (0.20 - _bbr).toFixed(3) : '0.16');
+  }
   if (p.has('numeric_score_font_size_ratio'))  _setEl('cfg-font-mode2',   p.get('numeric_score_font_size_ratio'));
   if (p.has('score_out_of_10'))                _setEl('tog-score-out-of-10', p.get('score_out_of_10'));
   if (p.has('numeric_score_separator'))        _setEl('tog-numeric-dot-separator', p.get('numeric_score_separator') === 'dot');
@@ -5996,7 +6063,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   if (p.has('bar_font_size_ratio')) _setEl('cfg-bar-font',   p.get('bar_font_size_ratio'));
   if (p.has('bar_frost_opacity'))   _setEl('cfg-bar-frost',  p.get('bar_frost_opacity'));
   if (p.has('bar_frost_saturation')) _setEl('cfg-bar-frost-sat', p.get('bar_frost_saturation'));
-  { const _raw = p.has('frost_reference') ? p.get('frost_reference').trim().toLowerCase() : 'pastel';
+  { const _raw = p.has('frost_reference') ? p.get('frost_reference').trim().toLowerCase() : 'match';
     const _ref = (_raw === 'match' || _raw === 'auto') ? 'match'
                : (_raw === 'true' || _raw === '1' || _raw === 'reference') ? 'reference'
                : 'pastel';
@@ -6066,6 +6133,7 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   }
   applyWeights('movie_weights', 'movie-weights', MOVIE_SOURCES);
   applyWeights('tv_weights',    'tv-weights',    TV_SOURCES);
+  _syncQuickRatingSourceSelect();
 
   // ── Persist API keys and rebuild ────────────────────────────────────────
   if (!settingsOnly) saveApiKeys();

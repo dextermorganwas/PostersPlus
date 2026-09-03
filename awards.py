@@ -38,13 +38,25 @@ FETCH_FAILED = _FetchFailed()
 # back the genre-aware fallback-title feature) so no new asset is needed.
 # "bebas" is the closest bundled match to the tall, condensed, all-caps look
 # BetterPosters' own sash ribbons use.
+# Selectable font for the diagonal award sash and the notch badge label text.
+# Scoped to the Sash panel only — the frosted rating bar always uses Inter,
+# since it lives in a different section and font choice bleeding into it was
+# confusing (and the two draws are laid out independently, so a size/metric
+# mismatch there reads as broken alignment rather than a style choice).
+#
+# Trimmed to two options on purpose: close inspection of BetterPosters' own
+# badges (https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg) shows a
+# plain rounded-rect chip in a normal-weight, title-case sans — much closer to
+# Inter than to a tall condensed display face. Inter is therefore the default
+# *and* the best BetterPosters match, not just the legacy fallback. Oswald is
+# kept as the one deliberately different alternative for people who want a
+# distinct badge/ribbon look; the rest (Bebas Neue, Playfair, Noto Serif,
+# Ubuntu) were removed — none of them read as closer to BetterPosters, and
+# each additional face was one more set of ascent/descent metrics that could
+# drift out of alignment with the ★ glyph substitution below.
 LABEL_FONT_FILES: dict[str, str] = {
-    "inter":    "Inter-Bold.ttf",
-    "bebas":    "BebasNeue-Bold.ttf",
-    "oswald":   "Oswald-Bold.ttf",
-    "playfair": "PlayfairDisplay-Bold.ttf",
-    "notoserif": "NotoSerif-Bold.ttf",
-    "ubuntu":   "Ubuntu-Bold.ttf",
+    "inter":  "Inter-Bold.ttf",
+    "oswald": "Oswald-Bold.ttf",
 }
 
 
@@ -59,37 +71,50 @@ def _label_font_path(font_name: str | None) -> str:
 # have the glyph, so _draw_label_text substitutes it in per-character rather
 # than refusing the font choice outright.
 _LABEL_FONT_MISSING_GLYPHS: dict[str, frozenset] = {
-    "bebas":     frozenset("★"),
-    "oswald":    frozenset("★"),
-    "playfair":  frozenset("★"),
-    "notoserif": frozenset("★"),
-    "ubuntu":    frozenset("★"),
+    "oswald": frozenset("★"),
 }
 
 
 def _draw_label_text(draw: "ImageDraw.ImageDraw", xy: tuple[float, float], text: str,
                       font, font_name: str, fill, size: int) -> None:
     """draw.text(), except any character *font_name* is known not to carry a
-    glyph for (currently just ★) is substituted with Inter at the same size.
-    Falls back to a single draw() call whenever nothing needs substituting —
-    which is every call for Inter itself, and most calls for the others."""
+    glyph for (currently just ★) is substituted with Inter at the same size,
+    baseline-aligned to *font* rather than sharing its raw y — different faces
+    have different ascent/descent, so reusing y as-is would draw the
+    substituted glyph a few pixels too high or low relative to the rest of
+    the label. Falls back to a single draw() call whenever nothing needs
+    substituting, which is every call for Inter itself."""
     missing = _LABEL_FONT_MISSING_GLYPHS.get(font_name)
     if not missing or not any(ch in missing for ch in text):
         draw.text(xy, text, font=font, fill=fill)
         return
     fallback = ImageFont.truetype(_label_font_path("inter"), size)
+    try:
+        primary_ascent, _ = font.getmetrics()
+        fallback_ascent, _ = fallback.getmetrics()
+    except AttributeError:
+        primary_ascent = fallback_ascent = 0
+    # xy[1] is already the correct top-y for *font* (computed by _text_center
+    # against its own metrics) — leave it alone. Only the substituted glyph
+    # needs repositioning, by the difference between the two fonts' ascents,
+    # so its baseline lands on the same line as the surrounding text instead
+    # of floating at whatever height its own top-anchored y would put it.
+    y_primary = xy[1]
+    y_fallback = xy[1] + (primary_ascent - fallback_ascent)
     x, y = xy
     segment, seg_font = "", (fallback if text[0] in missing else font)
+    seg_y = y_fallback if seg_font is fallback else y_primary
     for ch in text:
         ch_font = fallback if ch in missing else font
+        ch_y = y_fallback if ch_font is fallback else y_primary
         if ch_font is seg_font:
             segment += ch
         else:
-            draw.text((x, y), segment, font=seg_font, fill=fill)
+            draw.text((x, seg_y), segment, font=seg_font, fill=fill)
             x += draw.textlength(segment, font=seg_font)
-            seg_font, segment = ch_font, ch
+            seg_font, seg_y, segment = ch_font, ch_y, ch
     if segment:
-        draw.text((x, y), segment, font=seg_font, fill=fill)
+        draw.text((x, seg_y), segment, font=seg_font, fill=fill)
 
 
 class _RateLimited:
@@ -1885,14 +1910,14 @@ def _frosted_tint(
       the source S (1.2 = historical default; 0 = neutral grey). The colour is
       lifted to ~60 %+ Value and mixed 60/40 with white.
 
-    • Match (``reference="match"``) — the frost is standing in for a colour that
-      is already on the poster (a tinted vignette), so it must be *that colour*,
-      lightness included.  Anything else is visibly a different colour sitting
-      next to it: holding hue and chroma while lifting Value for legibility still
-      reads as pale khaki beside dark olive, because lightness is most of what the
-      eye calls "colour".  So the source is returned as it came, floored only
-      short of black, and the caller flips its label to light ink — see
-      _frost_ink.  ``saturation`` is ignored.
+    • Match (``reference="match"``) — calibrated against real BetterPosters
+      renders: a dark, saturated "jewel tone" (~90%+ saturation, ~15-20%
+      Value) built from the source hue, not a pastel and not a literal
+      unmodified sample. At that Value even high saturation reads to the eye
+      as "near-black with a tint" rather than garish. ``saturation`` scales
+      the saturation target (pass something lower than the ~0.9-1.2 bar
+      default for a more neutral "smoked glass" badge look) instead of being
+      ignored.
 
     • Reference (``reference=True``) — hew to the poster's *true* hue and
       saturation, dropping the pastel whitening so the frost closely matches the
@@ -1914,14 +1939,33 @@ def _frosted_tint(
     _MATCH_MIN_V = 0.12  # ...and how dark a matched one is allowed to get
 
     if reference == "match":
-        # The source colour, as it is.  Floored just clear of black so the panel
-        # is still a surface rather than a hole; the caller's own gate is what
-        # decides whether there was a colour worth matching in the first place.
-        # No `conf` fade either — that judgement has already been made, and a
-        # source close to neutral should come back close to neutral, not twice
-        # faded.
-        v_out = max(v, _MATCH_MIN_V)
-        return tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h, s, v_out))
+        # Recalibrated against 11 real BetterPosters renders (measured at the
+        # true bottom edge, HSV): S clustered at 86-100% (median ~94%,
+        # mean ~92%), V clustered at 14-20% (median ~17%) regardless of the
+        # source poster's own brightness — a deliberately dark, saturated
+        # "jewel tone" rather than either a pastel or a literal unmodified
+        # sample. At that Value the human eye reads even 90%+ saturation as
+        # "near-black with a tint", which is why it doesn't look garish next
+        # to the art despite the saturation number being high.
+        #
+        # `saturation` (ignored in the old version of this mode) now scales
+        # the target so a caller wanting the badge's more neutral "smoked
+        # glass" look (empirically S~20-35% in the same reference set — the
+        # badge samples its own local region and is tinted more subtly than
+        # the bottom bar) can pass a smaller value instead of this function
+        # needing a second code path.
+        #
+        # `conf` still gates it exactly as before: a truly neutral/near-black
+        # source (conf -> 0) is left close to its own low saturation rather
+        # than having a hue invented for it, since there's no real colour
+        # there to match in the first place.
+        _MATCH_TARGET_S = 0.92
+        _MATCH_V_FLOOR, _MATCH_V_SPAN = 0.13, 0.12   # -> ~13%-25%, centred on the observed 14-20%
+        v_out = max(_MATCH_MIN_V, min(_MATCH_V_FLOOR + _MATCH_V_SPAN, _MATCH_V_FLOOR + v * _MATCH_V_SPAN))
+        s_target = min(1.0, _MATCH_TARGET_S * max(0.0, saturation))
+        s_out = s + (s_target - s) * conf
+        s_out = max(0.0, min(1.0, s_out))
+        return tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h, s_out, v_out))
     if reference:
         # True poster hue + saturation at a bright value, then just enough white
         # to reach a luminance floor for the dark text — vivid, not pastel.

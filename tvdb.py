@@ -20,6 +20,7 @@ This module is the data layer only; wiring into the render fallback chains lives
 in main.py and is added in later phases.
 """
 import asyncio
+import hashlib
 import io
 import logging
 
@@ -52,25 +53,41 @@ _ARTWORK_BASE  = "https://artworks.thetvdb.com"
 
 # Refresh the ~1-month token comfortably before it expires.
 _TOKEN_TTL_SECONDS = 25 * 86400
-_TOKEN_CACHE_KEY   = "auth:token"
 _TYPES_CACHE_KEY   = "artwork:types"
 
 # Lazily-created asyncio primitives (bind to the running loop on first use).
 _token_lock: "asyncio.Lock | None" = None
 _semaphore:  "asyncio.Semaphore | None" = None
-# In-process token cache so the common path needs neither DB nor login.
-_token_mem: str | None = None
+# In-process token cache, keyed per API key (fingerprinted, see _key_fp) so a
+# user-supplied key and the server's own key — or two different users' keys —
+# never share or clobber each other's bearer token. The common single-server-
+# key path is just this dict holding one entry.
+_token_mem: dict[str, str] = {}
 
 
-def tvdb_enabled() -> bool:
-    """True when a TVDB API key is configured."""
-    return bool(SERVER_TVDB_KEY)
+def _key_fp(api_key: str) -> str:
+    """Short, non-reversible fingerprint of an API key for use in cache keys
+    and the in-process token dict, so raw keys never end up in the shared
+    SQLite cache or in memory under a predictable/loggable name."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:20]
+
+
+def _resolve_key(api_key: str | None) -> str | None:
+    return (api_key or SERVER_TVDB_KEY) or None
+
+
+def tvdb_enabled(api_key: str | None = None) -> bool:
+    """True when a TVDB API key is configured — the server's own, or, when
+    *api_key* is given, a per-request one (an admin key is not required for
+    a user-supplied key to work)."""
+    return bool(_resolve_key(api_key))
 
 
 def tvdb_status() -> str:
-    """Compact runtime status for startup logging."""
+    """Compact runtime status for startup logging. Server-key only — a
+    per-request key's status isn't meaningful at startup."""
     if not SERVER_TVDB_KEY:
-        return "disabled (no TVDB_API_KEY)"
+        return "disabled (no TVDB_API_KEY; per-request keys still accepted)"
     return "enabled (token acquired lazily on first use)"
 
 
@@ -92,11 +109,11 @@ def _get_semaphore() -> "asyncio.Semaphore":
 # Auth
 # ---------------------------------------------------------------------------
 
-async def _login(client: httpx.AsyncClient) -> str | None:
+async def _login(client: httpx.AsyncClient, api_key: str, pin: str | None) -> str | None:
     """Exchange the API key for a bearer token. Returns None on failure."""
-    payload: dict = {"apikey": SERVER_TVDB_KEY}
-    if TVDB_SUBSCRIBER_PIN:
-        payload["pin"] = TVDB_SUBSCRIBER_PIN
+    payload: dict = {"apikey": api_key}
+    if pin:
+        payload["pin"] = pin
     try:
         logger.info("External API Call: TVDB login")
         resp = await client.post(f"{_API_BASE}/login", json=payload, timeout=15.0)
@@ -106,7 +123,7 @@ async def _login(client: httpx.AsyncClient) -> str | None:
             logger.warning("TVDB login returned no token")
             return None
         set_cached_tvdb_json(
-            _TOKEN_CACHE_KEY, {"token": token}, _TOKEN_TTL_SECONDS
+            f"auth:token:{_key_fp(api_key)}", {"token": token}, _TOKEN_TTL_SECONDS
         )
         return token
     except Exception as exc:
@@ -114,36 +131,53 @@ async def _login(client: httpx.AsyncClient) -> str | None:
         return None
 
 
-async def _get_token(client: httpx.AsyncClient, *, force: bool = False) -> str | None:
-    """Return a valid bearer token, logging in once (single-flight) as needed."""
-    global _token_mem
+async def _get_token(
+    client: httpx.AsyncClient, api_key: str, pin: str | None = None, *, force: bool = False
+) -> str | None:
+    """Return a valid bearer token for *api_key*, logging in once
+    (single-flight per key) as needed. Every caller already resolved
+    api_key via _resolve_key, so this never falls back to the server key
+    itself — that keeps a bad per-request key from ever silently borrowing
+    the operator's own token."""
+    fp = _key_fp(api_key)
     if not force:
-        if _token_mem:
-            return _token_mem
-        cached = get_cached_tvdb_json(_TOKEN_CACHE_KEY)
+        if fp in _token_mem:
+            return _token_mem[fp]
+        cached = get_cached_tvdb_json(f"auth:token:{fp}")
         if cached and cached.get("token"):
-            _token_mem = cached["token"]
-            return _token_mem
+            _token_mem[fp] = cached["token"]
+            return _token_mem[fp]
     async with _get_lock():
         # Another coroutine may have refreshed while we waited for the lock.
         if not force:
-            if _token_mem:
-                return _token_mem
-            cached = get_cached_tvdb_json(_TOKEN_CACHE_KEY)
+            if fp in _token_mem:
+                return _token_mem[fp]
+            cached = get_cached_tvdb_json(f"auth:token:{fp}")
             if cached and cached.get("token"):
-                _token_mem = cached["token"]
-                return _token_mem
-        _token_mem = await _login(client)
-        return _token_mem
+                _token_mem[fp] = cached["token"]
+                return _token_mem[fp]
+        token = await _login(client, api_key, pin)
+        if token:
+            _token_mem[fp] = token
+        else:
+            _token_mem.pop(fp, None)
+        return token
 
 
 async def _authed_get(
-    client: httpx.AsyncClient, path: str, params: dict | None = None
+    client: httpx.AsyncClient, path: str, params: dict | None = None,
+    *, api_key: str | None = None, pin: str | None = None,
 ) -> dict | None:
     """GET a TVDB endpoint with the bearer token, retrying once on 401.
-    Returns the parsed ``data`` payload, or None on any failure."""
-    global _token_mem
-    token = await _get_token(client)
+    Returns the parsed ``data`` payload, or None on any failure. *api_key*
+    falls back to the server's own key when not given, same as every public
+    entry point in this module."""
+    key = _resolve_key(api_key)
+    if not key:
+        return None
+    effective_pin = pin if api_key else TVDB_SUBSCRIBER_PIN
+    fp = _key_fp(key)
+    token = await _get_token(client, key, effective_pin)
     if not token:
         return None
     url = f"{_API_BASE}{path}"
@@ -157,8 +191,8 @@ async def _authed_get(
             )
             if resp.status_code == 401 and attempt == 1:
                 # Token expired/invalid — force one refresh and retry.
-                _token_mem = None
-                token = await _get_token(client, force=True)
+                _token_mem.pop(fp, None)
+                token = await _get_token(client, key, effective_pin, force=True)
                 if not token:
                     return None
                 continue
@@ -188,12 +222,16 @@ def _classify(slug: str, name: str) -> str | None:
     return None
 
 
-async def _type_map(client: httpx.AsyncClient) -> dict[str, dict[int, str]]:
+async def _type_map(
+    client: httpx.AsyncClient, api_key: str | None = None, pin: str | None = None,
+) -> dict[str, dict[int, str]]:
     """Return ``{record_type: {type_id: category}}`` for movie/series artworks.
 
     ``category`` is one of 'logos' | 'backgrounds' | 'posters'. Cached long since
     the catalogue is effectively static; classification is keyword-based so a TVDB
     id renumbering can't break us as long as the slug/name still describes the art.
+    This catalogue isn't user-specific, so it's cached under one shared key
+    regardless of whose API key happened to fetch it.
     """
     cached = get_cached_tvdb_json(_TYPES_CACHE_KEY)
     if cached:
@@ -202,7 +240,7 @@ async def _type_map(client: httpx.AsyncClient) -> dict[str, dict[int, str]]:
             rt: {int(k): v for k, v in inner.items()}
             for rt, inner in cached.items()
         }
-    data = await _authed_get(client, "/artwork/types")
+    data = await _authed_get(client, "/artwork/types", api_key=api_key, pin=pin)
     out: dict[str, dict[int, str]] = {"movie": {}, "series": {}}
     if isinstance(data, list):
         for t in data:
@@ -264,14 +302,19 @@ async def resolve_tvdb_id(
     tvdb_id_hint: int | str | None = None,
     imdb_id: str | None = None,
     tmdb_id: str | None = None,
+    api_key: str | None = None,
+    pin: str | None = None,
 ) -> int | None:
     """Resolve a TVDB numeric id for a title.
 
     Prefers an explicit hint (e.g. tvdb_id surfaced by TMDB external_ids), then
     falls back to ``/search/remoteid`` by IMDb id, then by TMDB id. Both positive
-    and negative results are cached so repeat misses don't re-hit the API.
+    and negative results are cached so repeat misses don't re-hit the API. The
+    id<->id mapping itself isn't user-specific, so it's cached and shared the
+    same way regardless of whose API key resolved it — only the *artwork*
+    fetches below are scoped per key.
     """
-    if not tvdb_enabled():
+    if not tvdb_enabled(api_key):
         return None
     if tvdb_id_hint:
         try:
@@ -290,7 +333,7 @@ async def resolve_tvdb_id(
         for remote in (imdb_id, tmdb_id):
             if not remote:
                 continue
-            data = await _authed_get(client, f"/search/remoteid/{remote}")
+            data = await _authed_get(client, f"/search/remoteid/{remote}", api_key=api_key, pin=pin)
             if not isinstance(data, list):
                 continue
             for item in data:
@@ -321,16 +364,18 @@ async def resolve_tvdb_id(
 # ---------------------------------------------------------------------------
 
 async def fetch_tvdb_artworks(
-    client: httpx.AsyncClient, tvdb_id: int, media_type: str
+    client: httpx.AsyncClient, tvdb_id: int, media_type: str,
+    api_key: str | None = None, pin: str | None = None,
 ) -> dict[str, list[dict]]:
     """Return ``{'logos': [...], 'backgrounds': [...], 'posters': [...]}``.
 
     Each entry is ``{'url': str, 'language': str|None, 'score': float}`` sorted by
     descending score. The artwork index is language-agnostic, so a single fetch
     per TVDB id serves every requested logo language. Results (including empty)
-    are cached.
+    are cached — the artwork index for a given TVDB id is the same regardless of
+    whose key fetched it, so this cache is shared like resolve_tvdb_id's.
     """
-    if not tvdb_enabled():
+    if not tvdb_enabled(api_key):
         return {"logos": [], "backgrounds": [], "posters": []}
 
     want = _record_type(media_type)
@@ -341,11 +386,12 @@ async def fetch_tvdb_artworks(
 
     out: dict[str, list[dict]] = {"logos": [], "backgrounds": [], "posters": []}
     async with _get_semaphore():
-        type_map = await _type_map(client)
+        type_map = await _type_map(client, api_key=api_key, pin=pin)
         endpoint = "series" if want == "series" else "movies"
         # short=false guarantees the artworks array is included (short=true drops it).
         data = await _authed_get(
-            client, f"/{endpoint}/{tvdb_id}/extended", params={"short": "false"}
+            client, f"/{endpoint}/{tvdb_id}/extended", params={"short": "false"},
+            api_key=api_key, pin=pin,
         )
     artworks = (data or {}).get("artworks") if isinstance(data, dict) else None
     if isinstance(artworks, list):
@@ -506,6 +552,8 @@ async def tvdb_logo(
     imdb_id: str | None = None,
     tmdb_id: str | None = None,
     tvdb_id_hint: int | str | None = None,
+    api_key: str | None = None,
+    pin: str | None = None,
 ) -> Image.Image | None:
     """One-call logo rescue: resolve the TVDB id, pull the artwork index, return
     the best clearlogo. Safe to call unconditionally — yields None when TVDB is
@@ -513,16 +561,16 @@ async def tvdb_logo(
     the backdrop/poster helpers in the same request costs at most one API burst.
     """
     from config import TVDB_USE_LOGOS
-    if not tvdb_enabled() or not TVDB_USE_LOGOS:
+    if not tvdb_enabled(api_key) or not TVDB_USE_LOGOS:
         return None
     try:
         tvdb_id = await resolve_tvdb_id(
             client, media_type=media_type, tvdb_id_hint=tvdb_id_hint,
-            imdb_id=imdb_id, tmdb_id=tmdb_id,
+            imdb_id=imdb_id, tmdb_id=tmdb_id, api_key=api_key, pin=pin,
         )
         if not tvdb_id:
             return None
-        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type)
+        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type, api_key=api_key, pin=pin)
         logo = await fetch_tvdb_logo(
             client, artworks, logo_language,
             original_language=original_language, logo_priority=logo_priority,
@@ -589,6 +637,8 @@ async def tvdb_backdrop(
     tmdb_id: str | None = None,
     tvdb_id_hint: int | str | None = None,
     avoid_text: bool = False,
+    api_key: str | None = None,
+    pin: str | None = None,
 ) -> tuple[Image.Image | None, int | None]:
     """One-call backdrop rescue: resolve id, pull artwork index, crop the best
     background to portrait. Returns ``(image, tvdb_id)`` — the id is handed back
@@ -596,16 +646,16 @@ async def tvdb_backdrop(
     there's no usable background; ``(None, None)`` when TVDB is disabled/unmatched.
     """
     from config import TVDB_USE_BACKDROPS
-    if not tvdb_enabled() or not TVDB_USE_BACKDROPS:
+    if not tvdb_enabled(api_key) or not TVDB_USE_BACKDROPS:
         return None, None
     try:
         tvdb_id = await resolve_tvdb_id(
             client, media_type=media_type, tvdb_id_hint=tvdb_id_hint,
-            imdb_id=imdb_id, tmdb_id=tmdb_id,
+            imdb_id=imdb_id, tmdb_id=tmdb_id, api_key=api_key, pin=pin,
         )
         if not tvdb_id:
             return None, None
-        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type)
+        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type, api_key=api_key, pin=pin)
         image = await fetch_tvdb_backdrop(client, artworks, tvdb_id, avoid_text=avoid_text)
         return image, tvdb_id
     except Exception as exc:
@@ -660,6 +710,8 @@ async def tvdb_poster(
     imdb_id: str | None = None,
     tmdb_id: str | None = None,
     tvdb_id_hint: int | str | None = None,
+    api_key: str | None = None,
+    pin: str | None = None,
 ) -> tuple[Image.Image | None, int | None]:
     """One-call poster rescue: resolve id, pull artwork index, return the best
     poster normalised to poster dimensions, plus the resolved id for the caller's
@@ -667,16 +719,16 @@ async def tvdb_poster(
     caller MUST vet the result before compositing a logo. Gated by TVDB_USE_POSTERS
     (default off)."""
     from config import TVDB_USE_POSTERS
-    if not tvdb_enabled() or not TVDB_USE_POSTERS:
+    if not tvdb_enabled(api_key) or not TVDB_USE_POSTERS:
         return None, None
     try:
         tvdb_id = await resolve_tvdb_id(
             client, media_type=media_type, tvdb_id_hint=tvdb_id_hint,
-            imdb_id=imdb_id, tmdb_id=tmdb_id,
+            imdb_id=imdb_id, tmdb_id=tmdb_id, api_key=api_key, pin=pin,
         )
         if not tvdb_id:
             return None, None
-        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type)
+        artworks = await fetch_tvdb_artworks(client, tvdb_id, media_type, api_key=api_key, pin=pin)
         image = await fetch_tvdb_poster(client, artworks, tvdb_id, language)
         return image, tvdb_id
     except Exception as exc:

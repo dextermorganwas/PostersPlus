@@ -50,10 +50,11 @@ class _TruncateUrlFilter(logging.Filter):
          else that might inadvertently include a key.
     """
     _MAX = 80
-    # Match query params we hold (tmdb_key, mdblist_key, access_key) AND the
-    # upstream parameter names we forward keys under (api_key, apikey).
+    # Match query params we hold (tmdb_key, mdblist_key, tvdb_key, tvdb_pin,
+    # access_key) AND the upstream parameter names we forward keys under
+    # (api_key, apikey).
     _KEY_RE = re.compile(
-        r'((?:tmdb_key|mdblist_key|access_key|api_key|apikey)=)[^&\s\'\"]*',
+        r'((?:tmdb_key|mdblist_key|tvdb_key|tvdb_pin|access_key|api_key|apikey)=)[^&\s\'\"]*',
         re.IGNORECASE,
     )
 
@@ -1168,7 +1169,12 @@ class RequestConfig:
     #           what previously only happened automatically when a tinted
     #           vignette confidently matched; exposing it directly lets the bar
     #           and sash go dark-on-dark without needing the vignette involved.
-    frost_reference:         "bool | str" = False
+    # "match" ("Auto") is the default: it reads the poster's own colour rather
+    # than a fixed pastel/reference tint, so it degrades gracefully across
+    # every poster instead of needing per-title tuning — this is also what
+    # made the bar/sash/badge dark-on-dark-art possible at all (see the mode
+    # docstring below). An explicit pastel/reference request still wins.
+    frost_reference:         "bool | str" = "match"
     sash_length_ratio: float = 1.15  # diagonal sash length as fraction of poster width
     sash_height_ratio: float = 0.12  # diagonal sash height (thickness) as fraction of poster width
     wait_for_quality: bool = False  # block response until quality is fetched (for poster-warm workflows)
@@ -1458,6 +1464,19 @@ def build_request_config(params: dict) -> RequestConfig:
             cfg.badge_display_mode = 1
         else:
             cfg.badge_display_mode = 0
+
+    # The class default (4) assumes a quality source is configured. A request
+    # that never mentioned quality badges at all — no badge_display_mode, no
+    # show_quality_badges — is relying on that default, so on an instance
+    # where the admin hasn't set up AIOStreams/a scraper/QualiCache, honour
+    # the *intent* of the default (badges are opt-in, not a broken opt-out)
+    # rather than falling through to quality_source_configured()'s runtime
+    # "nothing to show" handling on every single poster. An explicit
+    # badge_display_mode always wins, configured or not.
+    if ("badge_display_mode" not in params and "show_quality_badges" not in params
+            and cfg.badge_display_mode in (1, 2, 4, 5, 6)
+            and not quality_source_configured()):
+        cfg.badge_display_mode = 0
 
     # Font-size ratios are multiplied by the poster width — anything above ~0.3
     # would overflow the poster; we cap at 0.5 to leave headroom for experimentation.
@@ -3102,6 +3121,16 @@ def build_poster(
     # lives in the sash panel); otherwise the rating bar's slider drives it. Sharing
     # it keeps the bar and any sash/notch identical.
     _frost_sat = cfg.sash_badge_frost_saturation if _notch_frosted else cfg.bar_frost_saturation
+    if _frost_ref == "match" and _notch_frosted:
+        # In the 11 real BetterPosters renders this was checked against, the
+        # badge is a much more neutral "smoked glass" tint than the bottom
+        # bar (~20-35% measured saturation vs ~90%+ for the bar) even though
+        # both plausibly come from the same dominant-colour extraction — the
+        # badge just samples a different, more visually mixed region (top
+        # corner vs a bottom strip) and is toned down further from there.
+        # This only applies in Auto/Match mode; Pastel and Reference keep
+        # sharing one saturation control as before (see the comment above).
+        _frost_sat *= 0.3
 
     # --- Rating / genre label ---
     if cfg.rating_display_mode != 0:
@@ -3405,7 +3434,11 @@ def build_poster(
                 ) if cfg.bar_style in ("rating_black", "rating_frosted") else None,
                 tint_rgb         = _frost_tint,
                 text_color       = cfg.rating_text_color,
-                font_name        = cfg.label_font,
+                # Deliberately not cfg.label_font: the rating bar is a
+                # separate section from the Sash panel where that setting
+                # lives, and letting it change the bar's font too was
+                # confusing (and cost it its own font-metric alignment).
+                font_name        = "inter",
             )
 
     # --- Discovery sash / badge ---
@@ -3850,7 +3883,7 @@ def _seconds_until_next_hour(target_hour: float, now: float | None = None) -> fl
 # stripped before storage; the background regeneration cycle re-supplies the
 # server-side keys. access_key is intentionally kept — the /poster replay needs
 # it to pass the instance access gate, and it is the instance's own key.
-_UNCACHEABLE_PARAMS = {"tmdb_key", "mdblist_key"}
+_UNCACHEABLE_PARAMS = {"tmdb_key", "mdblist_key", "tvdb_key", "tvdb_pin"}
 
 
 def _sanitize_request_params(query: str) -> str:
@@ -4279,7 +4312,7 @@ async def remove_server_header(request: Request, call_next):
 # alongside it.
 _NEVER_OMITTED_PARAMS = frozenset({
     "tmdb_id", "imdb_id", "type", "stremio_id", "anilist_id", "kitsu_id",
-    "access_key", "tmdb_key", "mdblist_key", "primary_client", "quality",
+    "access_key", "tmdb_key", "mdblist_key", "tvdb_key", "tvdb_pin", "primary_client", "quality",
     "bar_bottom_inset", "sash_badge_inset",
 })
 
@@ -4298,6 +4331,16 @@ def _render_param_defaults() -> dict:
     primary_client, so there is no single answer to publish.
     """
     cfg = RequestConfig()
+    # badge_display_mode's *effective* default is conditional (see the same
+    # check in build_request_config): a bare RequestConfig() always carries
+    # the class default of 4, but a real request with nothing to say about
+    # badges resolves to 0 when no quality source is configured. Without this,
+    # an instance with no quality source would publish "4" as omittable while
+    # actually rendering 0 for that same omitted param — the drift this
+    # function exists to prevent, just relocated to one field instead of
+    # eliminated.
+    if cfg.badge_display_mode in (1, 2, 4, 5, 6) and not quality_source_configured():
+        cfg.badge_display_mode = 0
     defaults: dict = {}
     for spec in dataclasses.fields(cfg):
         if spec.name in _NEVER_OMITTED_PARAMS:
@@ -4814,6 +4857,8 @@ async def get_poster(
     access_key: str = "",
     mdblist_key: str = "",
     tmdb_key: str = "",
+    tvdb_key: str = "",
+    tvdb_pin: str = "",
     show_award_sash: str | None = None,
     badge_display_mode: str | None = None,
     show_quality_badges: str | None = None,
@@ -4969,6 +5014,12 @@ async def get_poster(
     # -----------------------------------------------------------------------
     effective_tmdb_key    = _resolve_tmdb_key(tmdb_key)
     effective_mdblist_key = _resolve_mdblist_key(mdblist_key)
+    # TVDB's own resolution happens inside tvdb.py (tvdb._resolve_key) since
+    # it also decides the per-key bearer-token cache slot; here we just strip
+    # to None so "" (the FastAPI default when the param is omitted) reads the
+    # same as not passing tvdb_key at all.
+    effective_tvdb_key = tvdb_key.strip() or None
+    effective_tvdb_pin = tvdb_pin.strip() or None
 
     # Only null the key when the request has no MDBList-resolvable identity at
     # all — that makes every downstream MDBList gate (cooldown, back-off,
@@ -5692,21 +5743,23 @@ async def get_poster(
             # composite our logo only on a clean one, otherwise show it as-is.
             _tvdb_bg = None
             _tvdb_bg_id = None
-            if _cfg.TVDB_USE_BACKDROPS and tvdb.tvdb_enabled():
+            if _cfg.TVDB_USE_BACKDROPS and tvdb.tvdb_enabled(effective_tvdb_key):
                 _bd_avoid = _cfg.TEXTLESS_TEXT_DETECTION and _vote_detection_ok
                 _tvdb_bg, _tvdb_bg_id = await tvdb.tvdb_backdrop(
                     client, media_type=type, imdb_id=effective_imdb_id,
                     tmdb_id=tmdb_id, avoid_text=_bd_avoid,
+                    api_key=effective_tvdb_key, pin=effective_tvdb_pin,
                 )
             # Opt-in TVDB poster as a further no-art rescue (TVDB_USE_POSTERS).
             # A real poster — even one carrying its own title — beats a genre
             # canvas; we composite our logo only when it vets clean.
             _tvdb_ps = None
             _tvdb_ps_id = None
-            if (_tvdb_bg is None and _cfg.TVDB_USE_POSTERS and tvdb.tvdb_enabled()):
+            if (_tvdb_bg is None and _cfg.TVDB_USE_POSTERS and tvdb.tvdb_enabled(effective_tvdb_key)):
                 _tvdb_ps, _tvdb_ps_id = await tvdb.tvdb_poster(
                     client, media_type=type, language=rcfg.logo_language,
                     imdb_id=effective_imdb_id, tmdb_id=tmdb_id,
+                    api_key=effective_tvdb_key, pin=effective_tvdb_pin,
                 )
             if _tvdb_bg is not None:
                 if await _tvdb_is_clean(_tvdb_bg, _tvdb_bg_id):
@@ -5778,12 +5831,13 @@ async def get_poster(
                 # official poster when TVDB has nothing clean.
                 _tvdb_bg = None
                 _tvdb_bg_id = None
-                if (_cfg.TVDB_USE_BACKDROPS and tvdb.tvdb_enabled()
+                if (_cfg.TVDB_USE_BACKDROPS and tvdb.tvdb_enabled(effective_tvdb_key)
                         and not is_textless and not _use_original_art
                         and _detection_vote_ok(_vc)):
                     _tvdb_bg, _tvdb_bg_id = await tvdb.tvdb_backdrop(
                         client, media_type=type, imdb_id=effective_imdb_id,
                         tmdb_id=tmdb_id, avoid_text=True,
+                        api_key=effective_tvdb_key, pin=effective_tvdb_pin,
                     )
                 # Third rescue tier (opt-in, TVDB_USE_POSTERS): a TVDB poster.
                 # These usually have title text baked in, so it's only used when
@@ -5791,12 +5845,13 @@ async def get_poster(
                 # official poster.  Same low-vote gate.
                 _tvdb_ps = None
                 _tvdb_ps_id = None
-                if (_tvdb_bg is None and _cfg.TVDB_USE_POSTERS and tvdb.tvdb_enabled()
+                if (_tvdb_bg is None and _cfg.TVDB_USE_POSTERS and tvdb.tvdb_enabled(effective_tvdb_key)
                         and not is_textless and not _use_original_art
                         and _detection_vote_ok(_vc)):
                     _tvdb_ps, _tvdb_ps_id = await tvdb.tvdb_poster(
                         client, media_type=type, language=rcfg.logo_language,
                         imdb_id=effective_imdb_id, tmdb_id=tmdb_id,
+                        api_key=effective_tvdb_key, pin=effective_tvdb_pin,
                     )
                 if _tvdb_bg is not None and await _tvdb_is_clean(_tvdb_bg, _tvdb_bg_id):
                     is_textless = True
@@ -5901,7 +5956,7 @@ async def get_poster(
         #   1 = TVDB first, 2 = after TMDB but before Metahub, 3 = last resort.
         # Priority 3 (default) and a missing TVDB key both reduce to the original
         # TMDB -> Metahub -> (TVDB) behaviour, so existing output is unchanged.
-        _tvdb_logo_pri = _cfg.TVDB_LOGO_PRIORITY if tvdb.tvdb_enabled() else 3
+        _tvdb_logo_pri = _cfg.TVDB_LOGO_PRIORITY if tvdb.tvdb_enabled(effective_tvdb_key) else 3
 
         async def _resolve_logo():
             async def _tmdb(use_metahub):
@@ -5921,6 +5976,7 @@ async def get_poster(
                     logo_priority=rcfg.logo_priority,
                     secondary_language=_effective_secondary,
                     imdb_id=effective_imdb_id, tmdb_id=tmdb_id,
+                    api_key=effective_tvdb_key, pin=effective_tvdb_pin,
                 )
 
             async def _metahub():
